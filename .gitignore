@@ -1,0 +1,12 @@
+.venv/
+models/
+output/
+__pycache__/
+*.pyc
+*.egg-info/
+.claude/
+output/
+input/
+logs/
+
+

@@ -1,0 +1,48 @@
+# ==============================================================================
+# QuranSub Configuration
+# ==============================================================================
+
+subtitle:
+  # Font that supports Bangla. "Nirmala UI" ships with Windows 10/11.
+  # On Linux, install "Noto Sans Bengali" and use that name instead.
+  font_name: "Nirmala UI"
+  font_size: 22
+
+  # ASS colors in &HAABBGGRR format
+  primary_color: "&H00FFFFFF"      # White text
+  outline_color: "&H00000000"      # Black outline
+  back_color: "&H80000000"         # Semi-transparent black background
+
+  outline_width: 2
+  shadow_depth: 1
+  bold: true
+
+  # ASS alignment: 1=bottom-left  2=bottom-center  3=bottom-right
+  #                4=mid-left     5=mid-center     6=mid-right
+  #                7=top-left     8=top-center     9=top-right
+  alignment: 2
+
+  margin_left: 40
+  margin_right: 40
+  margin_vertical: 50
+
+transcription:
+  model_id: "tarteel-ai/whisper-base-ar-quran"
+  base_model_id: "openai/whisper-base"        # for generation config
+  chunk_length_s: 30
+  stride_length_s: 5
+  language: "ar"
+
+matching:
+  # Optional: set to a surah number (e.g. 6) to narrow the search space.
+  # Leave as null to search the entire Quran automatically.
+  surah_hint: null
+
+video:
+  codec: "libx264"
+  crf: 18
+  preset: "medium"
+
+paths:
+  quran_csv: "data/ben_quran_with_tafsir.csv"
+  output_dir: "output"

@@ -13,6 +13,25 @@ from .render import render_video
 logger = logging.getLogger(__name__)
 
 
+def _unique_output_dir(base_output: Path, name: str) -> Path:
+    """Return a unique subdirectory under base_output for this run.
+
+    First tries base_output/name. If it exists, tries name_1, name_2, etc.
+    """
+    candidate = base_output / name
+    if not candidate.exists():
+        candidate.mkdir(parents=True, exist_ok=True)
+        return candidate
+
+    counter = 1
+    while True:
+        candidate = base_output / f"{name}_{counter}"
+        if not candidate.exists():
+            candidate.mkdir(parents=True, exist_ok=True)
+            return candidate
+        counter += 1
+
+
 def run_pipeline(video_path: str, config: dict) -> str:
     """Run the full pipeline: video -> subtitled video.
 
@@ -23,9 +42,26 @@ def run_pipeline(video_path: str, config: dict) -> str:
     Returns:
         Path to the final subtitled video.
     """
-    video_path = Path(video_path).resolve()
-    output_dir = Path(config["paths"]["output_dir"]).resolve()
-    output_dir.mkdir(parents=True, exist_ok=True)
+    project_root = Path(config.get("_project_root", ".")).resolve()
+
+    # Resolve video: look in input/ directory first, then as-is
+    video_path = Path(video_path)
+    if not video_path.is_absolute():
+        input_candidate = project_root / "input" / video_path
+        if input_candidate.exists():
+            video_path = input_candidate
+        else:
+            video_path = (project_root / video_path).resolve()
+    video_path = video_path.resolve()
+
+    # Create a unique output subdirectory named after the video
+    base_output = Path(config["paths"]["output_dir"])
+    if not base_output.is_absolute():
+        base_output = project_root / base_output
+    base_output = base_output.resolve()
+
+    video_stem = video_path.stem  # e.g. "taha"
+    output_dir = _unique_output_dir(base_output, video_stem)
 
     tc = config["transcription"]
     mc = config["matching"]

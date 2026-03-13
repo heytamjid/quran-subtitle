@@ -3,13 +3,13 @@
 QuranSub — Automatic Quran Recitation Video Subtitle Generator
 
 Usage:
-    python run.py full input_video.mp4                  # full pipeline
-    python run.py full input_video.mp4 --surah 76       # with surah hint
-    python run.py extract-audio input_video.mp4         # just extract audio
+    python run.py full taha.mp4 --surah 20              # full pipeline (reads from input/)
+    python run.py full taha.mp4 --surah 20              # output -> output/taha/
+    python run.py extract-audio input/video.mp4         # just extract audio
     python run.py transcribe audio.mp3                  # just transcribe
     python run.py match transcription.json              # just match
     python run.py subtitle matched_segments.json        # just generate subs
-    python run.py render input.mp4 --subtitle subs.ass  # just burn subs
+    python run.py render input/video.mp4 --subtitle x   # just burn subs
 """
 
 import argparse
@@ -160,7 +160,7 @@ def main():
 
     # -- full --
     p = sub.add_parser("full", help="Run the full pipeline")
-    p.add_argument("video", help="Input video file")
+    p.add_argument("video", help="Video filename (looked up in input/ directory)")
     p.add_argument("--surah", type=int, default=None, help="Surah number hint")
     p.add_argument("--output-dir", default=None, help="Output directory")
     p.set_defaults(func=cmd_full)

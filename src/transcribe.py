@@ -5,8 +5,16 @@ import logging
 import os
 from pathlib import Path
 
-# Disable xet download protocol — it stalls on Windows for large files
-os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
+# --- Must be set BEFORE importing huggingface_hub / transformers -----------
+os.environ.setdefault("HF_HUB_DISABLE_XET", "1")  # xet protocol stalls on Windows
+
+# If models are already cached locally, go fully offline so huggingface_hub
+# never makes a single HTTP request (cache validation, model cards, etc.).
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+_MODEL_CACHE = _PROJECT_ROOT / "models"
+if _MODEL_CACHE.exists() and any(_MODEL_CACHE.iterdir()):
+    os.environ.setdefault("HF_HUB_OFFLINE", "1")
+# ---------------------------------------------------------------------------
 
 import torch
 from transformers import (
@@ -45,31 +53,17 @@ def transcribe_audio(
     device = "cuda" if torch.cuda.is_available() else "cpu"
     dtype = torch.float16 if device == "cuda" else torch.float32
 
-    # Cache models locally in models/ directory so they persist across runs
-    project_root = Path(__file__).resolve().parent.parent
-    local_cache = str(project_root / "models")
-
-    # Check if models are already cached locally
-    cache_path = Path(local_cache)
-    models_cached = cache_path.exists() and any(cache_path.iterdir())
-
-    if models_cached:
-        # Block ALL network calls from HF hub (local_files_only isn't enough —
-        # the pipeline and internal HF code still phone home for model cards,
-        # safetensors conversion PRs, etc.)
-        os.environ["HF_HUB_OFFLINE"] = "1"
-        logger.info("Device: %s | Model: %s | OFFLINE (cached)", device, model_id)
-    else:
-        os.environ.pop("HF_HUB_OFFLINE", None)
-        logger.info("Device: %s | Model: %s | Downloading to %s", device, model_id, local_cache)
+    local_cache = str(_MODEL_CACHE)
+    offline = os.environ.get("HF_HUB_OFFLINE") == "1"
+    logger.info("Device: %s | Model: %s | Offline: %s", device, model_id, offline)
 
     try:
         processor = AutoProcessor.from_pretrained(model_id, cache_dir=local_cache)
         model = AutoModelForSpeechSeq2Seq.from_pretrained(model_id, cache_dir=local_cache)
     except OSError:
-        # Cache exists but incomplete — re-download
+        # Cache missing or incomplete — go online and download
         os.environ.pop("HF_HUB_OFFLINE", None)
-        logger.info("Cache incomplete — downloading model...")
+        logger.info("Model not in local cache — downloading...")
         processor = AutoProcessor.from_pretrained(model_id, cache_dir=local_cache)
         model = AutoModelForSpeechSeq2Seq.from_pretrained(model_id, cache_dir=local_cache)
     model = model.to(device).eval()

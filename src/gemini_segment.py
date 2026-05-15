@@ -288,6 +288,10 @@ Goal:
    LOCAL token indices inside that display unit's bangla_tokens. Arabic ranges
    may move forward or backward relative to Bangla order when Arabic and Bangla
    syntax differ. Do not force Bangla into Arabic order.
+5. If multiple Bangla phrases correspond to the same Arabic word or the same
+   Arabic expression, give those Bangla phrases identical arabic_start and
+   arabic_end values so they highlight together. Do not create partial overlaps
+   for phrases that should move as one semantic unit.
 
 {mode_instructions}
 

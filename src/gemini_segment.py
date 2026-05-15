@@ -76,10 +76,12 @@ def _extract_json(text: str) -> dict[str, Any]:
 def _is_current_schema(segments: list[dict], cfg: dict) -> bool:
     if not isinstance(segments, list):
         return False
-    mode = _mapping_mode(cfg)
+    mapping_mode = _mapping_mode(cfg)
+    display_mode = _display_mode(cfg)
     return bool(segments) and all(
         seg.get("schema_version") == _SCHEMA_VERSION
-        and seg.get("mapping_granularity") == mode
+        and seg.get("mapping_granularity") == mapping_mode
+        and seg.get("display_granularity") == display_mode
         and isinstance(seg.get("bangla_tokens"), list)
         for seg in segments
     )
@@ -211,13 +213,15 @@ def _fallback_phrase(text: str, words: list[dict], start_idx: int, end_idx: int)
 
 
 def _fallback_segments(ayah: dict, source: str = "fallback", cfg: dict | None = None) -> list[dict]:
-    mode = _mapping_mode(cfg or {})
+    mapping_mode = _mapping_mode(cfg or {})
+    display_mode = _display_mode(cfg or {})
     words = ayah.get("words") or []
     if not words:
         return [{
             **ayah,
             "schema_version": _SCHEMA_VERSION,
-            "mapping_granularity": mode,
+            "display_granularity": display_mode,
+            "mapping_granularity": mapping_mode,
             "source": source,
             "bangla_tokens": _tokenize_translation(ayah.get("translation", "")),
             "layout": {"preset": "bottom_center"},
@@ -233,7 +237,8 @@ def _fallback_segments(ayah: dict, source: str = "fallback", cfg: dict | None = 
         "surah": ayah.get("surah"),
         "ayah": ayah.get("ayah"),
         "schema_version": _SCHEMA_VERSION,
-        "mapping_granularity": mode,
+        "display_granularity": display_mode,
+        "mapping_granularity": mapping_mode,
         "arabic": ayah.get("arabic", ""),
         "translation": translation,
         "start": start,
@@ -254,8 +259,59 @@ def _fallback_segments(ayah: dict, source: str = "fallback", cfg: dict | None = 
 
 
 def _mapping_mode(cfg: dict) -> str:
-    mode = str(cfg.get("mapping_granularity", "phrase")).strip().lower()
+    mode = str(cfg.get("mapping_granularity", "word")).strip().lower()
     return mode if mode in {"phrase", "word"} else "phrase"
+
+
+def _display_mode(cfg: dict) -> str:
+    mode = str(cfg.get("display_granularity", "clause")).strip().lower()
+    return mode if mode in {"clause", "compact_phrase"} else "clause"
+
+
+def _display_mode_instructions(mode: str) -> str:
+    if mode == "compact_phrase":
+        return """Display granularity mode: COMPACT_PHRASE.
+- Split the ayah into shorter consecutive display units suitable for large
+  fonts.
+- A normal everyday reader should be able to read the full Bangla display unit
+  comfortably during the time it stays on screen.
+- Prefer compact consecutive Bangla phrases that map to contiguous Arabic word
+  ranges.
+- The size targets are soft readability hints, not hard limits. Meaning and
+  clean Arabic/Bangla synchronization are more important than hitting a number.
+- Do not split a meaningful expression only to satisfy a size target."""
+
+    return """Display granularity mode: CLAUSE.
+- Split the ayah into clause-level display units.
+- Prefer complete clauses or complete expression units over tiny fragments.
+- Display units may be longer than compact_phrase mode when that improves
+  meaning and readability.
+- The size targets are soft readability hints, not hard limits. Meaning and
+  clean Arabic/Bangla synchronization are more important than hitting a number."""
+
+
+def _display_few_shot(mode: str) -> str:
+    if mode == "compact_phrase":
+        return """Display split example for COMPACT_PHRASE mode:
+Translation:
+"And Allah invites to the Home of Peace and guides whom He wills to a straight path."
+Good display_units:
+1. "And Allah invites"
+2. "to the Home of Peace"
+3. "and guides whom He wills"
+4. "to a straight path."
+Reason: each unit is a short consecutive translation phrase for large fonts,
+and each can be mapped to a contiguous Arabic range. Do not create disconnected
+translation snippets inside one display unit."""
+
+    return """Display split example for CLAUSE mode:
+Translation:
+"And Allah invites to the Home of Peace and guides whom He wills to a straight path."
+Good display_units:
+1. "And Allah invites to the Home of Peace"
+2. "and guides whom He wills to a straight path."
+Reason: these are complete clause-level units with shared Arabic/translation
+boundaries."""
 
 
 def _mapping_mode_instructions(mode: str) -> str:
@@ -327,9 +383,13 @@ then "আশা" must use global_bangla_start=10, not 1."""
 def _build_prompt(ayah: dict, cfg: dict) -> str:
     max_chars = cfg.get("max_display_chars", 86)
     max_words = cfg.get("max_display_arabic_words", 12)
-    mode = _mapping_mode(cfg)
-    mode_instructions = _mapping_mode_instructions(mode)
-    mode_example = _mapping_few_shot(mode)
+    max_bangla_tokens = cfg.get("max_display_bangla_tokens", 12)
+    display_mode = _display_mode(cfg)
+    mapping_mode = _mapping_mode(cfg)
+    display_instructions = _display_mode_instructions(display_mode)
+    display_example = _display_few_shot(display_mode)
+    mode_instructions = _mapping_mode_instructions(mapping_mode)
+    mode_example = _mapping_few_shot(mapping_mode)
 
     original_bangla_tokens = _tokenize_translation(ayah.get("translation", ""))
     payload = {
@@ -357,15 +417,16 @@ def _build_prompt(ayah: dict, cfg: dict) -> str:
 Return JSON only. Do not include Markdown.
 
 Goal:
-1. Split the ayah into expression-level display units. A unit should be a
-   complete understandable phrase/clause that fits on screen, not necessarily
-   a full ayah. Prefer units under {max_chars} Bangla characters and about
-   {max_words} Arabic timed words, but never split in a way that damages
-   meaning or recitation/translation synchronization.
+1. Split the ayah into display units according to display_granularity.
+   Prefer units under about {max_chars} Bangla characters, about
+   {max_bangla_tokens} Bangla tokens, and about {max_words} Arabic timed words.
+   These are soft readability hints, not hard limits. Do not split or merge in
+   a way that damages meaning or recitation/translation synchronization.
 2. Each display unit must reference a contiguous range of
    original_bangla_tokens using display_bangla_start/display_bangla_end. Keep
    the Bangla word order exactly as the original translation presents it. Do not
-   reorder Bangla to match Arabic grammar.
+   reorder Bangla to match Arabic grammar. Each display unit must also map to a
+   contiguous Arabic word range using arabic_start/arabic_end.
 3. Map each Bangla phrase to one or more Arabic timed word indices. Some Bangla
    phrases may map to multiple Arabic words and some Arabic particles may be
    absorbed into a larger Bangla phrase.
@@ -378,6 +439,8 @@ Goal:
    Arabic expression, give those Bangla phrases identical arabic_start and
    arabic_end values so they highlight together. Do not create partial overlaps
    for phrases that should move as one semantic unit.
+
+{display_instructions}
 
 {mode_instructions}
 
@@ -403,15 +466,7 @@ Required JSON shape:
   ]
 }}
 
-Few-shot example:
-Input English translation:
-"And Allah invites to the Home of Peace [i.e., Paradise] and guides whom He
-wills to a straight path."
-Good display split:
-1. "And Allah invites to the Home of Peace [i.e., Paradise]"
-2. "and guides whom He wills to a straight path."
-Reason: these are complete expression units with a shared Arabic/translation
-boundary.
+{display_example}
 
 {mode_example}
 
@@ -460,7 +515,8 @@ def _call_gemini(client, request_config, model: str, prompt: str) -> dict:
 
 
 def _normalize_response(ayah: dict, response: dict, cfg: dict | None = None) -> list[dict]:
-    mode = _mapping_mode(cfg or {})
+    mapping_mode = _mapping_mode(cfg or {})
+    display_mode = _display_mode(cfg or {})
     words = ayah.get("words") or []
     if not words:
         return _fallback_segments(ayah, source="gemini_no_words", cfg=cfg)
@@ -552,7 +608,8 @@ def _normalize_response(ayah: dict, response: dict, cfg: dict | None = None) -> 
             "surah": ayah.get("surah"),
             "ayah": ayah.get("ayah"),
             "schema_version": _SCHEMA_VERSION,
-            "mapping_granularity": mode,
+            "display_granularity": display_mode,
+            "mapping_granularity": mapping_mode,
             "arabic": ayah.get("arabic", ""),
             "translation": bangla_text,
             "start": start,

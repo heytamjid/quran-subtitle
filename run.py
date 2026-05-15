@@ -64,6 +64,8 @@ def cmd_full(args):
         cfg["matching"]["surah_hint"] = args.surah
     if args.mapping_granularity:
         cfg.setdefault("gemini", {})["mapping_granularity"] = args.mapping_granularity
+    if args.display_granularity:
+        cfg.setdefault("gemini", {})["display_granularity"] = args.display_granularity
     if args.output_dir:
         cfg["paths"]["output_dir"] = args.output_dir
     run_pipeline(args.video, cfg)
@@ -121,6 +123,8 @@ def cmd_segment(args):
     cfg = _load_config(args.config)
     if args.mapping_granularity:
         cfg.setdefault("gemini", {})["mapping_granularity"] = args.mapping_granularity
+    if args.display_granularity:
+        cfg.setdefault("gemini", {})["display_granularity"] = args.display_granularity
     segments = load_segments(args.segments)
 
     out = args.output or str(Path(args.segments).with_name("gemini_segments.json"))
@@ -186,6 +190,12 @@ def main():
         default=None,
         help="Gemini Bangla mapping style: phrase or word",
     )
+    p.add_argument(
+        "--display-granularity",
+        choices=["clause", "compact_phrase"],
+        default=None,
+        help="Gemini display unit style: clause or compact_phrase",
+    )
     p.set_defaults(func=cmd_full)
 
     # -- extract-audio --
@@ -216,6 +226,12 @@ def main():
         choices=["phrase", "word"],
         default=None,
         help="Gemini Bangla mapping style: phrase or word",
+    )
+    p.add_argument(
+        "--display-granularity",
+        choices=["clause", "compact_phrase"],
+        default=None,
+        help="Gemini display unit style: clause or compact_phrase",
     )
     p.set_defaults(func=cmd_segment)
 

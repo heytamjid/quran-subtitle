@@ -12,7 +12,7 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 _JSON_BLOCK_RE = re.compile(r"```(?:json)?\s*(.*?)```", re.DOTALL | re.IGNORECASE)
-_SCHEMA_VERSION = 2
+_SCHEMA_VERSION = 3
 
 
 def _tokenize_translation(text: str) -> list[str]:
@@ -31,6 +31,16 @@ def _text_from_tokens(tokens: list[str], start_idx: int, end_idx: int) -> str:
     start_idx = max(0, min(start_idx, len(tokens) - 1))
     end_idx = max(start_idx, min(end_idx, len(tokens) - 1))
     return " ".join(tokens[start_idx:end_idx + 1])
+
+
+def _normalized_for_match(text: str) -> str:
+    return " ".join(str(text).split()).strip()
+
+
+def _tokens_match_text(tokens: list[str], start_idx: int, end_idx: int, text: str) -> bool:
+    if not text:
+        return False
+    return _normalized_for_match(_text_from_tokens(tokens, start_idx, end_idx)) == _normalized_for_match(text)
 
 
 def _read_project_id(credentials_path: str | None) -> str | None:
@@ -85,28 +95,35 @@ def _normalize_phrase_maps(
     phrases: list[dict],
     unit: dict,
     bangla_tokens: list[str],
+    display_bangla_start: int,
+    display_bangla_end: int,
 ) -> list[dict]:
-    """Normalize Gemini phrase maps without forcing Arabic timing order."""
+    """Normalize phrase maps and derive local Bangla indices for renderers."""
     normalized: list[dict] = []
-    min_start = int(unit["arabic_start"])
-    max_end = int(unit["arabic_end"])
-    max_bangla = len(bangla_tokens) - 1
-
+    min_arabic = int(unit["arabic_start"])
+    max_arabic = int(unit["arabic_end"])
     for raw in phrases:
         if not bangla_tokens:
             continue
 
-        b_start = int(raw.get("bangla_start", 0))
-        b_end = int(raw.get("bangla_end", b_start))
-        b_start = max(0, min(b_start, max_bangla))
-        b_end = max(b_start, min(b_end, max_bangla))
+        text = str(raw.get("text", "")).strip()
+        raw_b_start = raw.get("global_bangla_start", raw.get("bangla_start", 0))
+        raw_b_end = raw.get("global_bangla_end", raw.get("bangla_end", raw_b_start))
+        b_start, b_end, g_start, g_end = _resolve_bangla_range(
+            int(raw_b_start),
+            int(raw_b_end),
+            text,
+            bangla_tokens,
+            display_bangla_start,
+            display_bangla_end,
+        )
 
-        a_start = int(raw.get("arabic_start", min_start))
+        a_start = int(raw.get("arabic_start", min_arabic))
         a_end = int(raw.get("arabic_end", a_start))
-        a_start = max(min_start, min(a_start, max_end))
-        a_end = max(a_start, min(a_end, max_end))
+        a_start = max(min_arabic, min(a_start, max_arabic))
+        a_end = max(a_start, min(a_end, max_arabic))
 
-        text = str(raw.get("text") or _text_from_tokens(bangla_tokens, b_start, b_end)).strip()
+        text = str(text or _text_from_tokens(bangla_tokens, b_start, b_end)).strip()
         if not text:
             continue
 
@@ -114,11 +131,67 @@ def _normalize_phrase_maps(
             "text": text,
             "bangla_start": b_start,
             "bangla_end": b_end,
+            "global_bangla_start": g_start,
+            "global_bangla_end": g_end,
             "arabic_start": a_start,
             "arabic_end": a_end,
         })
 
     return normalized
+
+
+def _resolve_bangla_range(
+    raw_start: int,
+    raw_end: int,
+    text: str,
+    bangla_tokens: list[str],
+    display_bangla_start: int,
+    display_bangla_end: int,
+) -> tuple[int, int, int, int]:
+    """Resolve Gemini Bangla indices, preferring global coordinates.
+
+    New prompts ask for global_bangla_start/end. Compatibility handling keeps
+    old local bangla_start/end outputs usable and avoids clamping invalid
+    global values to the final local token.
+    """
+    max_local = len(bangla_tokens) - 1
+    raw_end = max(raw_start, raw_end)
+
+    def from_local(start: int, end: int) -> tuple[int, int, int, int]:
+        start = max(0, min(start, max_local))
+        end = max(start, min(end, max_local))
+        return start, end, display_bangla_start + start, display_bangla_start + end
+
+    def from_global(start: int, end: int) -> tuple[int, int, int, int]:
+        start = max(display_bangla_start, min(start, display_bangla_end))
+        end = max(start, min(end, display_bangla_end))
+        return start - display_bangla_start, end - display_bangla_start, start, end
+
+    global_valid = display_bangla_start <= raw_start <= raw_end <= display_bangla_end
+    local_valid = 0 <= raw_start <= raw_end <= max_local
+
+    if global_valid:
+        candidate = from_global(raw_start, raw_end)
+        if _tokens_match_text(bangla_tokens, candidate[0], candidate[1], text) or not text:
+            return candidate
+
+    if local_valid:
+        candidate = from_local(raw_start, raw_end)
+        if _tokens_match_text(bangla_tokens, candidate[0], candidate[1], text) or not text:
+            return candidate
+
+    phrase_tokens = _tokenize_translation(text)
+    if phrase_tokens:
+        for i in range(0, len(bangla_tokens) - len(phrase_tokens) + 1):
+            end = i + len(phrase_tokens) - 1
+            if bangla_tokens[i:end + 1] == phrase_tokens:
+                return from_local(i, end)
+
+    if global_valid:
+        return from_global(raw_start, raw_end)
+    if local_valid:
+        return from_local(raw_start, raw_end)
+    return from_local(raw_start, raw_end)
 
 
 def _fallback_phrase(text: str, words: list[dict], start_idx: int, end_idx: int) -> list[dict]:
@@ -128,6 +201,8 @@ def _fallback_phrase(text: str, words: list[dict], start_idx: int, end_idx: int)
         "text": text.strip(),
         "bangla_start": 0,
         "bangla_end": max(0, len(tokens) - 1),
+        "global_bangla_start": 0,
+        "global_bangla_end": max(0, len(tokens) - 1),
         "arabic_start": start_idx,
         "arabic_end": end_idx,
         "start": start,
@@ -210,33 +285,43 @@ def _mapping_mode_instructions(mode: str) -> str:
 def _mapping_few_shot(mode: str) -> str:
     if mode == "word":
         return """Granularity example for WORD mode:
-Bangla tokens: ["আর", "আল্লাহ", "শান্তির", "আবাসের", "দিকে", "আহবান", "করেন"]
+Original Bangla token indices:
+0="আর", 1="আল্লাহ", 2="শান্তির", 3="আবাসের", 4="দিকে", 5="আহবান", 6="করেন"
 Arabic timing meaning:
 0 = "And Allah", 1 = "invites", 2..4 = "to the Home of Peace"
 Good translation_phrases:
 [
-  {"bangla_start": 0, "bangla_end": 0, "text": "আর", "arabic_start": 0, "arabic_end": 0},
-  {"bangla_start": 1, "bangla_end": 1, "text": "আল্লাহ", "arabic_start": 0, "arabic_end": 0},
-  {"bangla_start": 5, "bangla_end": 6, "text": "আহবান করেন", "arabic_start": 1, "arabic_end": 1},
-  {"bangla_start": 4, "bangla_end": 4, "text": "দিকে", "arabic_start": 2, "arabic_end": 2},
-  {"bangla_start": 3, "bangla_end": 3, "text": "আবাসের", "arabic_start": 3, "arabic_end": 3},
-  {"bangla_start": 2, "bangla_end": 2, "text": "শান্তির", "arabic_start": 4, "arabic_end": 4}
+  {"global_bangla_start": 0, "global_bangla_end": 0, "text": "আর", "arabic_start": 0, "arabic_end": 0},
+  {"global_bangla_start": 1, "global_bangla_end": 1, "text": "আল্লাহ", "arabic_start": 0, "arabic_end": 0},
+  {"global_bangla_start": 5, "global_bangla_end": 6, "text": "আহবান করেন", "arabic_start": 1, "arabic_end": 1},
+  {"global_bangla_start": 4, "global_bangla_end": 4, "text": "দিকে", "arabic_start": 2, "arabic_end": 2},
+  {"global_bangla_start": 3, "global_bangla_end": 3, "text": "আবাসের", "arabic_start": 3, "arabic_end": 3},
+  {"global_bangla_start": 2, "global_bangla_end": 2, "text": "শান্তির", "arabic_start": 4, "arabic_end": 4}
 ]
 Reason: the Bangla sentence order stays unchanged, but highlight timing follows
-Arabic recitation order."""
+Arabic recitation order.
+
+Offset example for WORD mode:
+If a display unit has display_bangla_start=3 and bangla_tokens=["আহারে", "ও", "ভোগে"],
+then "আহারে" must use global_bangla_start=3, not 0."""
 
     return """Granularity example for PHRASE mode:
-Bangla tokens: ["আর", "আল্লাহ", "শান্তির", "আবাসের", "দিকে", "আহবান", "করেন"]
+Original Bangla token indices:
+0="আর", 1="আল্লাহ", 2="শান্তির", 3="আবাসের", 4="দিকে", 5="আহবান", 6="করেন"
 Arabic timing meaning:
 0 = "And Allah", 1 = "invites", 2..4 = "to the Home of Peace"
 Good translation_phrases:
 [
-  {"bangla_start": 0, "bangla_end": 1, "text": "আর আল্লাহ", "arabic_start": 0, "arabic_end": 0},
-  {"bangla_start": 2, "bangla_end": 4, "text": "শান্তির আবাসের দিকে", "arabic_start": 2, "arabic_end": 4},
-  {"bangla_start": 5, "bangla_end": 6, "text": "আহবান করেন", "arabic_start": 1, "arabic_end": 1}
+  {"global_bangla_start": 0, "global_bangla_end": 1, "text": "আর আল্লাহ", "arabic_start": 0, "arabic_end": 0},
+  {"global_bangla_start": 2, "global_bangla_end": 4, "text": "শান্তির আবাসের দিকে", "arabic_start": 2, "arabic_end": 4},
+  {"global_bangla_start": 5, "global_bangla_end": 6, "text": "আহবান করেন", "arabic_start": 1, "arabic_end": 1}
 ]
 Reason: these are stable semantic phrases. Do not collapse all seven tokens into
-one phrase because useful phrase-level synchronization would be lost."""
+one phrase because useful phrase-level synchronization would be lost.
+
+Offset example for PHRASE mode:
+If a display unit has display_bangla_start=9 and bangla_tokens=["এবং", "আশা", "তাদেরকে"],
+then "আশা" must use global_bangla_start=10, not 1."""
 
 
 def _build_prompt(ayah: dict, cfg: dict) -> str:
@@ -284,10 +369,11 @@ Goal:
 3. Map each Bangla phrase to one or more Arabic timed word indices. Some Bangla
    phrases may map to multiple Arabic words and some Arabic particles may be
    absorbed into a larger Bangla phrase.
-4. The phrase maps inside a display unit must use bangla_start/bangla_end as
-   LOCAL token indices inside that display unit's bangla_tokens. Arabic ranges
-   may move forward or backward relative to Bangla order when Arabic and Bangla
-   syntax differ. Do not force Bangla into Arabic order.
+4. The phrase maps inside a display unit must use global_bangla_start and
+   global_bangla_end. These are GLOBAL indices from original_bangla_tokens, not
+   local indices from bangla_tokens. Do not output bangla_start or bangla_end.
+   Arabic ranges may move forward or backward relative to Bangla order when
+   Arabic and Bangla syntax differ. Do not force Bangla into Arabic order.
 5. If multiple Bangla phrases correspond to the same Arabic word or the same
    Arabic expression, give those Bangla phrases identical arabic_start and
    arabic_end values so they highlight together. Do not create partial overlaps
@@ -310,8 +396,8 @@ Required JSON shape:
       "bangla_tokens": ["token0", "token1", "token2"],
       "layout": {{"preset": "bottom_center"}},
       "translation_phrases": [
-        {{"bangla_start": 0, "bangla_end": 0, "text": "Bangla phrase", "arabic_start": 3, "arabic_end": 3}},
-        {{"bangla_start": 1, "bangla_end": 2, "text": "next Bangla phrase", "arabic_start": 0, "arabic_end": 2}}
+        {{"global_bangla_start": 0, "global_bangla_end": 0, "text": "Bangla phrase", "arabic_start": 3, "arabic_end": 3}},
+        {{"global_bangla_start": 1, "global_bangla_end": 2, "text": "next Bangla phrase", "arabic_start": 0, "arabic_end": 2}}
       ]
     }}
   ]
@@ -433,12 +519,16 @@ def _normalize_response(ayah: dict, response: dict, cfg: dict | None = None) -> 
             raw_phrases,
             {"arabic_start": a_start, "arabic_end": a_end},
             bangla_tokens,
+            display_bangla_start,
+            display_bangla_end,
         )
         if not phrase_maps:
             phrase_maps = [{
                 "text": bangla_text,
                 "bangla_start": 0,
                 "bangla_end": len(bangla_tokens) - 1,
+                "global_bangla_start": display_bangla_start,
+                "global_bangla_end": display_bangla_end,
                 "arabic_start": a_start,
                 "arabic_end": a_end,
             }]
@@ -452,8 +542,8 @@ def _normalize_response(ayah: dict, response: dict, cfg: dict | None = None) -> 
             )
             timed_phrases.append({
                 **phrase,
-                "global_bangla_start": display_bangla_start + int(phrase["bangla_start"]),
-                "global_bangla_end": display_bangla_start + int(phrase["bangla_end"]),
+                "global_bangla_start": int(phrase["global_bangla_start"]),
+                "global_bangla_end": int(phrase["global_bangla_end"]),
                 "start": phrase_start,
                 "end": phrase_end,
             })

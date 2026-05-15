@@ -63,9 +63,13 @@ def _extract_json(text: str) -> dict[str, Any]:
         raise
 
 
-def _is_current_schema(segments: list[dict]) -> bool:
+def _is_current_schema(segments: list[dict], cfg: dict) -> bool:
+    if not isinstance(segments, list):
+        return False
+    mode = _mapping_mode(cfg)
     return bool(segments) and all(
         seg.get("schema_version") == _SCHEMA_VERSION
+        and seg.get("mapping_granularity") == mode
         and isinstance(seg.get("bangla_tokens"), list)
         for seg in segments
     )
@@ -131,12 +135,14 @@ def _fallback_phrase(text: str, words: list[dict], start_idx: int, end_idx: int)
     }]
 
 
-def _fallback_segments(ayah: dict, source: str = "fallback") -> list[dict]:
+def _fallback_segments(ayah: dict, source: str = "fallback", cfg: dict | None = None) -> list[dict]:
+    mode = _mapping_mode(cfg or {})
     words = ayah.get("words") or []
     if not words:
         return [{
             **ayah,
             "schema_version": _SCHEMA_VERSION,
+            "mapping_granularity": mode,
             "source": source,
             "bangla_tokens": _tokenize_translation(ayah.get("translation", "")),
             "layout": {"preset": "bottom_center"},
@@ -152,6 +158,7 @@ def _fallback_segments(ayah: dict, source: str = "fallback") -> list[dict]:
         "surah": ayah.get("surah"),
         "ayah": ayah.get("ayah"),
         "schema_version": _SCHEMA_VERSION,
+        "mapping_granularity": mode,
         "arabic": ayah.get("arabic", ""),
         "translation": translation,
         "start": start,
@@ -171,9 +178,73 @@ def _fallback_segments(ayah: dict, source: str = "fallback") -> list[dict]:
     }]
 
 
+def _mapping_mode(cfg: dict) -> str:
+    mode = str(cfg.get("mapping_granularity", "phrase")).strip().lower()
+    return mode if mode in {"phrase", "word"} else "phrase"
+
+
+def _mapping_mode_instructions(mode: str) -> str:
+    if mode == "word":
+        return """Mapping granularity mode: WORD.
+- Prefer the smallest useful Bangla token ranges.
+- Map individual Bangla tokens when that is linguistically reasonable.
+- Keep multi-token Bangla expressions together when one Arabic word/phrase
+  naturally translates to the whole expression, or when splitting would mislead.
+- It is acceptable for multiple Bangla token ranges to map to the same Arabic
+  word range.
+- Usually produce one mapping per Bangla word, except for idioms, helper verb
+  expressions, compound terms, or case/postposition expressions."""
+
+    return """Mapping granularity mode: PHRASE.
+- Prefer stable semantic phrase chunks rather than isolated function words.
+- Use noun phrases, verb phrases, prepositional/case phrases, and compound
+  expressions.
+- Do not make one giant phrase unless the whole display unit is genuinely one
+  indivisible expression.
+- Usually produce 2-6 phrase mappings per display unit when the unit has enough
+  words.
+- It is acceptable for multiple Bangla phrase ranges to map to the same Arabic
+  word range."""
+
+
+def _mapping_few_shot(mode: str) -> str:
+    if mode == "word":
+        return """Granularity example for WORD mode:
+Bangla tokens: ["আর", "আল্লাহ", "শান্তির", "আবাসের", "দিকে", "আহবান", "করেন"]
+Arabic timing meaning:
+0 = "And Allah", 1 = "invites", 2..4 = "to the Home of Peace"
+Good translation_phrases:
+[
+  {"bangla_start": 0, "bangla_end": 0, "text": "আর", "arabic_start": 0, "arabic_end": 0},
+  {"bangla_start": 1, "bangla_end": 1, "text": "আল্লাহ", "arabic_start": 0, "arabic_end": 0},
+  {"bangla_start": 5, "bangla_end": 6, "text": "আহবান করেন", "arabic_start": 1, "arabic_end": 1},
+  {"bangla_start": 4, "bangla_end": 4, "text": "দিকে", "arabic_start": 2, "arabic_end": 2},
+  {"bangla_start": 3, "bangla_end": 3, "text": "আবাসের", "arabic_start": 3, "arabic_end": 3},
+  {"bangla_start": 2, "bangla_end": 2, "text": "শান্তির", "arabic_start": 4, "arabic_end": 4}
+]
+Reason: the Bangla sentence order stays unchanged, but highlight timing follows
+Arabic recitation order."""
+
+    return """Granularity example for PHRASE mode:
+Bangla tokens: ["আর", "আল্লাহ", "শান্তির", "আবাসের", "দিকে", "আহবান", "করেন"]
+Arabic timing meaning:
+0 = "And Allah", 1 = "invites", 2..4 = "to the Home of Peace"
+Good translation_phrases:
+[
+  {"bangla_start": 0, "bangla_end": 1, "text": "আর আল্লাহ", "arabic_start": 0, "arabic_end": 0},
+  {"bangla_start": 2, "bangla_end": 4, "text": "শান্তির আবাসের দিকে", "arabic_start": 2, "arabic_end": 4},
+  {"bangla_start": 5, "bangla_end": 6, "text": "আহবান করেন", "arabic_start": 1, "arabic_end": 1}
+]
+Reason: these are stable semantic phrases. Do not collapse all seven tokens into
+one phrase because useful phrase-level synchronization would be lost."""
+
+
 def _build_prompt(ayah: dict, cfg: dict) -> str:
     max_chars = cfg.get("max_display_chars", 86)
     max_words = cfg.get("max_display_arabic_words", 12)
+    mode = _mapping_mode(cfg)
+    mode_instructions = _mapping_mode_instructions(mode)
+    mode_example = _mapping_few_shot(mode)
 
     original_bangla_tokens = _tokenize_translation(ayah.get("translation", ""))
     payload = {
@@ -218,6 +289,8 @@ Goal:
    may move forward or backward relative to Bangla order when Arabic and Bangla
    syntax differ. Do not force Bangla into Arabic order.
 
+{mode_instructions}
+
 Use timed_arabic_words indices for all arabic_start/arabic_end values.
 All start/end indices are inclusive.
 
@@ -250,6 +323,8 @@ Good display split:
 Reason: these are complete expression units with a shared Arabic/translation
 boundary.
 
+{mode_example}
+
 Now process this ayah:
 {json.dumps(payload, ensure_ascii=False, indent=2)}
 """
@@ -279,7 +354,7 @@ def _make_client(cfg: dict):
 
     client = genai.Client(vertexai=True, project=project_id, location=location)
     config = types.GenerateContentConfig(
-        temperature=float(cfg.get("temperature", 0.15)),
+        temperature=float(cfg.get("temperature", 0.0)),
         response_mime_type="application/json",
     )
     return client, config
@@ -294,15 +369,16 @@ def _call_gemini(client, request_config, model: str, prompt: str) -> dict:
     return _extract_json(response.text or "")
 
 
-def _normalize_response(ayah: dict, response: dict) -> list[dict]:
+def _normalize_response(ayah: dict, response: dict, cfg: dict | None = None) -> list[dict]:
+    mode = _mapping_mode(cfg or {})
     words = ayah.get("words") or []
     if not words:
-        return _fallback_segments(ayah, source="gemini_no_words")
+        return _fallback_segments(ayah, source="gemini_no_words", cfg=cfg)
 
     parent_bangla_tokens = _tokenize_translation(ayah.get("translation", ""))
     units = response.get("display_units") or response.get("segments") or []
     if not isinstance(units, list) or not units:
-        return _fallback_segments(ayah, source="gemini_empty")
+        return _fallback_segments(ayah, source="gemini_empty", cfg=cfg)
 
     display_segments: list[dict] = []
     word_count = len(words)
@@ -382,6 +458,7 @@ def _normalize_response(ayah: dict, response: dict) -> list[dict]:
             "surah": ayah.get("surah"),
             "ayah": ayah.get("ayah"),
             "schema_version": _SCHEMA_VERSION,
+            "mapping_granularity": mode,
             "arabic": ayah.get("arabic", ""),
             "translation": bangla_text,
             "start": start,
@@ -401,7 +478,7 @@ def _normalize_response(ayah: dict, response: dict) -> list[dict]:
         })
         last_end = a_end
 
-    return display_segments or _fallback_segments(ayah, source="gemini_invalid")
+    return display_segments or _fallback_segments(ayah, source="gemini_invalid", cfg=cfg)
 
 
 def segment_ayahs_with_gemini(
@@ -414,7 +491,7 @@ def segment_ayahs_with_gemini(
     if output and cfg.get("cache_results", True) and output.exists():
         with open(output, "r", encoding="utf-8") as f:
             cached = json.load(f)
-        if _is_current_schema(cached):
+        if _is_current_schema(cached, cfg):
             logger.info("Using cached Gemini segmentation: %s", output)
             return cached
         logger.info("Ignoring stale Gemini segmentation cache: %s", output)
@@ -423,7 +500,7 @@ def segment_ayahs_with_gemini(
         logger.info("Gemini segmentation disabled; using ayah-level subtitles")
         enhanced = []
         for ayah in ayah_segments:
-            enhanced.extend(_fallback_segments(ayah, source="disabled"))
+            enhanced.extend(_fallback_segments(ayah, source="disabled", cfg=cfg))
         if output:
             save_segments(enhanced, str(output))
         return enhanced
@@ -437,7 +514,7 @@ def segment_ayahs_with_gemini(
         try:
             prompt = _build_prompt(ayah, cfg)
             response = _call_gemini(client, request_config, model, prompt)
-            display_segments = _normalize_response(ayah, response)
+            display_segments = _normalize_response(ayah, response, cfg)
             enhanced.extend(display_segments)
             logger.info(
                 "Gemini segmented Surah %s Ayah %s into %d display units",
@@ -450,7 +527,7 @@ def segment_ayahs_with_gemini(
                 "Gemini segmentation failed for Surah %s Ayah %s; using fallback",
                 ayah.get("surah"), ayah.get("ayah"),
             )
-            enhanced.extend(_fallback_segments(ayah, source="gemini_error"))
+            enhanced.extend(_fallback_segments(ayah, source="gemini_error", cfg=cfg))
 
     if output:
         save_segments(enhanced, str(output))

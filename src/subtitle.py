@@ -93,14 +93,33 @@ def _phrase_token_range(phrase: dict, tokens: list[str]) -> tuple[int, int]:
     return start, end
 
 
-def _build_restyle_text(seg: dict, phrase: dict | None, style_cfg: dict) -> str:
+def _highlight_ranges(phrases: list[dict], tokens: list[str]) -> list[tuple[int, int]]:
+    ranges = []
+    for phrase in phrases:
+        start, end = _phrase_token_range(phrase, tokens)
+        ranges.append((start, end))
+    if not ranges:
+        return []
+
+    ranges.sort()
+    merged = [ranges[0]]
+    for start, end in ranges[1:]:
+        prev_start, prev_end = merged[-1]
+        if start <= prev_end + 1:
+            merged[-1] = (prev_start, max(prev_end, end))
+        else:
+            merged.append((start, end))
+    return merged
+
+
+def _build_restyle_text(seg: dict, phrases: list[dict], style_cfg: dict) -> str:
     tokens = _display_tokens(seg)
     if not tokens:
         return _escape_ass_text(seg.get("translation", ""))
-    if not phrase:
+    ranges = _highlight_ranges(phrases, tokens)
+    if not ranges:
         return _escape_ass_text(" ".join(tokens))
 
-    start, end = _phrase_token_range(phrase, tokens)
     primary = _ass_text_color(style_cfg.get("primary_color", "&H00FFFFFF"))
     highlight = _ass_text_color(
         style_cfg.get(
@@ -114,54 +133,60 @@ def _build_restyle_text(seg: dict, phrase: dict | None, style_cfg: dict) -> str:
     reset_tag = f"{{\\c{primary}{underline_off}}}"
 
     parts = []
+    active = False
     for i, token in enumerate(tokens):
         prefix = ""
-        if i == start:
+        should_highlight = any(start <= i <= end for start, end in ranges)
+        if should_highlight and not active:
             prefix += highlight_tag
-        if i == end + 1:
+            active = True
+        elif active and not should_highlight:
             prefix += reset_tag
+            active = False
         parts.append(prefix + _escape_ass_text(token))
-    if end == len(tokens) - 1:
-        parts.append(reset_tag)
+    if active and parts:
+        parts[-1] += reset_tag
     return " ".join(parts)
 
 
-def _restyle_intervals(seg: dict) -> list[tuple[float, float, dict | None]]:
+def _restyle_intervals(seg: dict) -> list[tuple[float, float, list[dict]]]:
     phrases = seg.get("translation_phrases") or seg.get("phrases") or []
     start = float(seg["start"])
     end = float(seg["end"])
     if not phrases:
-        return [(start, end, None)]
+        return [(start, end, [])]
 
     timed = []
+    boundaries = {start, end}
     for phrase in phrases:
         p_start = max(start, float(phrase.get("start", start)))
         p_end = min(end, float(phrase.get("end", p_start)))
         if p_end > p_start:
             timed.append((p_start, p_end, phrase))
+            boundaries.add(p_start)
+            boundaries.add(p_end)
 
     if not timed:
-        return [(start, end, None)]
+        return [(start, end, [])]
 
-    timed.sort(key=lambda item: (item[0], item[1]))
-    intervals: list[tuple[float, float, dict | None]] = []
-    cursor = start
-    for p_start, p_end, phrase in timed:
-        if p_start > cursor:
-            intervals.append((cursor, p_start, None))
-        active_start = max(p_start, cursor)
-        if p_end > active_start:
-            intervals.append((active_start, p_end, phrase))
-            cursor = p_end
-    if cursor < end:
-        intervals.append((cursor, end, None))
+    points = sorted(boundaries)
+    intervals: list[tuple[float, float, list[dict]]] = []
+    for slice_start, slice_end in zip(points, points[1:]):
+        if slice_end <= slice_start:
+            continue
+        active = [
+            phrase
+            for p_start, p_end, phrase in timed
+            if p_start < slice_end and p_end > slice_start
+        ]
+        intervals.append((slice_start, slice_end, active))
     return intervals
 
 
 def _build_restyle_dialogue_lines(seg: dict, style_cfg: dict) -> list[str]:
     lines = []
-    for start, end, phrase in _restyle_intervals(seg):
-        text = _build_restyle_text(seg, phrase, style_cfg)
+    for start, end, phrases in _restyle_intervals(seg):
+        text = _build_restyle_text(seg, phrases, style_cfg)
         lines.append(
             f"Dialogue: 0,{_format_ass_time(start)},{_format_ass_time(end)},Default,,0,0,0,,{text}"
         )

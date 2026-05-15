@@ -62,6 +62,8 @@ def cmd_full(args):
     cfg = _load_config(args.config)
     if args.surah is not None:
         cfg["matching"]["surah_hint"] = args.surah
+    if args.mapping_granularity:
+        cfg.setdefault("gemini", {})["mapping_granularity"] = args.mapping_granularity
     if args.output_dir:
         cfg["paths"]["output_dir"] = args.output_dir
     run_pipeline(args.video, cfg)
@@ -117,6 +119,8 @@ def cmd_segment(args):
     from src.gemini_segment import segment_ayahs_with_gemini
 
     cfg = _load_config(args.config)
+    if args.mapping_granularity:
+        cfg.setdefault("gemini", {})["mapping_granularity"] = args.mapping_granularity
     segments = load_segments(args.segments)
 
     out = args.output or str(Path(args.segments).with_name("gemini_segments.json"))
@@ -176,6 +180,12 @@ def main():
     p.add_argument("video", help="Video filename (looked up in input/ directory)")
     p.add_argument("--surah", type=int, default=None, help="Surah number hint")
     p.add_argument("--output-dir", default=None, help="Output directory")
+    p.add_argument(
+        "--mapping-granularity",
+        choices=["phrase", "word"],
+        default=None,
+        help="Gemini Bangla mapping style: phrase or word",
+    )
     p.set_defaults(func=cmd_full)
 
     # -- extract-audio --
@@ -201,6 +211,12 @@ def main():
     p = sub.add_parser("segment", help="Use Gemini to split matched ayahs into display units")
     p.add_argument("segments", help="Matched segments JSON file")
     p.add_argument("-o", "--output", default=None, help="Output Gemini segments JSON path")
+    p.add_argument(
+        "--mapping-granularity",
+        choices=["phrase", "word"],
+        default=None,
+        help="Gemini Bangla mapping style: phrase or word",
+    )
     p.set_defaults(func=cmd_segment)
 
     # -- subtitle --

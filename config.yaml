@@ -48,7 +48,8 @@ gemini:
   project_id: null                 # Read from the service account JSON when null
   location: "global"
   model: "gemini-2.5-flash"
-  temperature: 0.15
+  temperature: 0.0
+  mapping_granularity: "word"    # phrase=stable chunks, word=finer token mapping
   cache_results: true
   fallback_on_error: true
   max_display_chars: 86

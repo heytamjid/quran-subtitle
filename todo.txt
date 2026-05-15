@@ -1,0 +1,11 @@
+4. Optionally split the task into two conceptual sections in the prompt:
+
+  A. First choose display units.
+  B. Then map Bangla token ranges inside each display unit using the configured granularity.
+
+  Not necessarily two API calls yet. Just a clearer prompt structure.
+
+
+  ---
+
+  Make the pipeline recoverable. Error at any point should allow the user to fix the issue and then resume from that point, rather than starting over.

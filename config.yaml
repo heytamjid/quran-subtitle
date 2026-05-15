@@ -10,7 +10,10 @@ subtitle:
 
   # ASS colors in &HAABBGGRR format
   primary_color: "&H00FFFFFF"      # White text
-  karaoke_color: "&H0000FFFF"      # Yellow karaoke highlight
+  highlight_mode: "restyle"        # restyle=jump highlight, karaoke=forward-only, plain=no highlight
+  highlight_color: "&H0000FFFF"    # Yellow active phrase
+  highlight_underline: false
+  karaoke_color: "&H0000FFFF"      # Used only when highlight_mode is karaoke
   outline_color: "&H00000000"      # Black outline
   back_color: "&H80000000"         # Semi-transparent black background
 

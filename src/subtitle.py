@@ -34,6 +34,29 @@ def _escape_ass_text(text: str) -> str:
     )
 
 
+def _ass_text_color(style_color: str) -> str:
+    """Convert ASS style color &HAABBGGRR to inline text color &HBBGGRR&."""
+    color = str(style_color).strip()
+    if color.startswith("&H"):
+        hex_part = color[2:]
+        if len(hex_part) == 8:
+            return f"&H{hex_part[2:]}&"
+        if len(hex_part) == 6:
+            return f"&H{hex_part}&"
+    return color
+
+
+def _tokenize_display_text(text: str) -> list[str]:
+    return [token for token in str(text).split() if token]
+
+
+def _display_tokens(seg: dict) -> list[str]:
+    tokens = seg.get("bangla_tokens")
+    if isinstance(tokens, list) and tokens:
+        return [str(token).strip() for token in tokens if str(token).strip()]
+    return _tokenize_display_text(seg.get("translation", ""))
+
+
 def _join_display_text(left: str, right: str) -> str:
     left = left.rstrip()
     right = right.lstrip()
@@ -44,6 +67,105 @@ def _join_display_text(left: str, right: str) -> str:
     if right[0] in ",.;:!?)]}":
         return left + right
     return left + " " + right
+
+
+def _find_token_range(tokens: list[str], phrase_text: str) -> tuple[int, int]:
+    phrase_tokens = _tokenize_display_text(phrase_text)
+    if not tokens or not phrase_tokens:
+        return 0, max(0, len(tokens) - 1)
+
+    for i in range(0, len(tokens) - len(phrase_tokens) + 1):
+        if tokens[i:i + len(phrase_tokens)] == phrase_tokens:
+            return i, i + len(phrase_tokens) - 1
+    return 0, max(0, len(tokens) - 1)
+
+
+def _phrase_token_range(phrase: dict, tokens: list[str]) -> tuple[int, int]:
+    if not tokens:
+        return 0, 0
+    if "bangla_start" in phrase and "bangla_end" in phrase:
+        start = int(phrase["bangla_start"])
+        end = int(phrase["bangla_end"])
+    else:
+        start, end = _find_token_range(tokens, str(phrase.get("text", "")))
+    start = max(0, min(start, len(tokens) - 1))
+    end = max(start, min(end, len(tokens) - 1))
+    return start, end
+
+
+def _build_restyle_text(seg: dict, phrase: dict | None, style_cfg: dict) -> str:
+    tokens = _display_tokens(seg)
+    if not tokens:
+        return _escape_ass_text(seg.get("translation", ""))
+    if not phrase:
+        return _escape_ass_text(" ".join(tokens))
+
+    start, end = _phrase_token_range(phrase, tokens)
+    primary = _ass_text_color(style_cfg.get("primary_color", "&H00FFFFFF"))
+    highlight = _ass_text_color(
+        style_cfg.get(
+            "highlight_color",
+            style_cfg.get("karaoke_color", "&H0000FFFF"),
+        )
+    )
+    underline_on = "\\u1" if style_cfg.get("highlight_underline", False) else ""
+    underline_off = "\\u0" if style_cfg.get("highlight_underline", False) else ""
+    highlight_tag = f"{{\\c{highlight}{underline_on}}}"
+    reset_tag = f"{{\\c{primary}{underline_off}}}"
+
+    parts = []
+    for i, token in enumerate(tokens):
+        prefix = ""
+        if i == start:
+            prefix += highlight_tag
+        if i == end + 1:
+            prefix += reset_tag
+        parts.append(prefix + _escape_ass_text(token))
+    if end == len(tokens) - 1:
+        parts.append(reset_tag)
+    return " ".join(parts)
+
+
+def _restyle_intervals(seg: dict) -> list[tuple[float, float, dict | None]]:
+    phrases = seg.get("translation_phrases") or seg.get("phrases") or []
+    start = float(seg["start"])
+    end = float(seg["end"])
+    if not phrases:
+        return [(start, end, None)]
+
+    timed = []
+    for phrase in phrases:
+        p_start = max(start, float(phrase.get("start", start)))
+        p_end = min(end, float(phrase.get("end", p_start)))
+        if p_end > p_start:
+            timed.append((p_start, p_end, phrase))
+
+    if not timed:
+        return [(start, end, None)]
+
+    timed.sort(key=lambda item: (item[0], item[1]))
+    intervals: list[tuple[float, float, dict | None]] = []
+    cursor = start
+    for p_start, p_end, phrase in timed:
+        if p_start > cursor:
+            intervals.append((cursor, p_start, None))
+        active_start = max(p_start, cursor)
+        if p_end > active_start:
+            intervals.append((active_start, p_end, phrase))
+            cursor = p_end
+    if cursor < end:
+        intervals.append((cursor, end, None))
+    return intervals
+
+
+def _build_restyle_dialogue_lines(seg: dict, style_cfg: dict) -> list[str]:
+    lines = []
+    for start, end, phrase in _restyle_intervals(seg):
+        text = _build_restyle_text(seg, phrase, style_cfg)
+        lines.append(
+            f"Dialogue: 0,{_format_ass_time(start)},{_format_ass_time(end)},Default,,0,0,0,,{text}"
+        )
+    return lines
 
 
 def _build_karaoke_text(seg: dict) -> str:
@@ -82,6 +204,13 @@ def _build_karaoke_text(seg: dict) -> str:
     if not parts:
         return _escape_ass_text(seg["translation"])
     return "".join(parts)
+
+
+def _build_karaoke_dialogue_line(seg: dict) -> str:
+    start = _format_ass_time(seg["start"])
+    end = _format_ass_time(seg["end"])
+    text = _build_karaoke_text(seg)
+    return f"Dialogue: 0,{start},{end},Default,,0,0,0,,{text}"
 
 
 def generate_srt(segments: list[dict], output_path: str) -> str:
@@ -151,16 +280,27 @@ Style: Default,{font},{size},{primary},{secondary},{outline_c},{back_c},{bold},0
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text"""
 
+    highlight_mode = style_cfg.get("highlight_mode", "restyle")
     dialogue_lines = []
     for seg in segments:
-        start = _format_ass_time(seg["start"])
-        end = _format_ass_time(seg["end"])
-        text = _build_karaoke_text(seg)
-        dialogue_lines.append(
-            f"Dialogue: 0,{start},{end},Default,,0,0,0,,{text}"
-        )
+        if highlight_mode == "karaoke":
+            dialogue_lines.append(_build_karaoke_dialogue_line(seg))
+        elif highlight_mode == "plain":
+            start = _format_ass_time(seg["start"])
+            end = _format_ass_time(seg["end"])
+            text = _escape_ass_text(seg["translation"])
+            dialogue_lines.append(
+                f"Dialogue: 0,{start},{end},Default,,0,0,0,,{text}"
+            )
+        else:
+            dialogue_lines.extend(_build_restyle_dialogue_lines(seg, style_cfg))
 
     content = header + "\n" + "\n".join(dialogue_lines) + "\n"
     output_path.write_text(content, encoding="utf-8-sig")  # BOM for player compat
-    logger.info("ASS generated: %s (%d entries)", output_path, len(segments))
+    logger.info(
+        "ASS generated: %s (%d segments, %d dialogue lines)",
+        output_path,
+        len(segments),
+        len(dialogue_lines),
+    )
     return str(output_path)

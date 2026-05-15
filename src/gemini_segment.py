@@ -12,6 +12,25 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 _JSON_BLOCK_RE = re.compile(r"```(?:json)?\s*(.*?)```", re.DOTALL | re.IGNORECASE)
+_SCHEMA_VERSION = 2
+
+
+def _tokenize_translation(text: str) -> list[str]:
+    """Tokenize display text for index-based highlighting.
+
+    This intentionally keeps punctuation attached to the adjacent word. It gives
+    Gemini stable whitespace token indices while preserving the original Bangla
+    word order and making reconstruction predictable for ASS/HTML renderers.
+    """
+    return [token for token in str(text).split() if token]
+
+
+def _text_from_tokens(tokens: list[str], start_idx: int, end_idx: int) -> str:
+    if not tokens:
+        return ""
+    start_idx = max(0, min(start_idx, len(tokens) - 1))
+    end_idx = max(start_idx, min(end_idx, len(tokens) - 1))
+    return " ".join(tokens[start_idx:end_idx + 1])
 
 
 def _read_project_id(credentials_path: str | None) -> str | None:
@@ -44,60 +63,67 @@ def _extract_json(text: str) -> dict[str, Any]:
         raise
 
 
+def _is_current_schema(segments: list[dict]) -> bool:
+    return bool(segments) and all(
+        seg.get("schema_version") == _SCHEMA_VERSION
+        and isinstance(seg.get("bangla_tokens"), list)
+        for seg in segments
+    )
+
+
 def _timed_word_span(words: list[dict], start_idx: int, end_idx: int) -> tuple[float, float]:
     start_idx = max(0, min(start_idx, len(words) - 1))
     end_idx = max(start_idx, min(end_idx, len(words) - 1))
     return float(words[start_idx]["start"]), float(words[end_idx]["end"])
 
 
-def _merge_phrase_maps(phrases: list[dict], unit: dict) -> list[dict]:
-    """Keep phrase order while forcing non-decreasing karaoke timing.
-
-    Arabic and Bangla syntax can diverge. If a fine-grained map would require
-    out-of-order highlighting, merge adjacent phrases so ASS karaoke can still
-    preserve the original Bangla sequence.
-    """
-    merged: list[dict] = []
+def _normalize_phrase_maps(
+    phrases: list[dict],
+    unit: dict,
+    bangla_tokens: list[str],
+) -> list[dict]:
+    """Normalize Gemini phrase maps without forcing Arabic timing order."""
+    normalized: list[dict] = []
     min_start = int(unit["arabic_start"])
     max_end = int(unit["arabic_end"])
+    max_bangla = len(bangla_tokens) - 1
 
     for raw in phrases:
-        text = str(raw.get("text", "")).strip()
-        if not text:
+        if not bangla_tokens:
             continue
+
+        b_start = int(raw.get("bangla_start", 0))
+        b_end = int(raw.get("bangla_end", b_start))
+        b_start = max(0, min(b_start, max_bangla))
+        b_end = max(b_start, min(b_end, max_bangla))
+
         a_start = int(raw.get("arabic_start", min_start))
         a_end = int(raw.get("arabic_end", a_start))
         a_start = max(min_start, min(a_start, max_end))
         a_end = max(a_start, min(a_end, max_end))
 
-        item = {"text": text, "arabic_start": a_start, "arabic_end": a_end}
-        if merged and item["arabic_start"] <= merged[-1]["arabic_end"]:
-            prev = merged[-1]
-            prev["text"] = _join_text(prev["text"], item["text"])
-            prev["arabic_start"] = min(prev["arabic_start"], item["arabic_start"])
-            prev["arabic_end"] = max(prev["arabic_end"], item["arabic_end"])
-        else:
-            merged.append(item)
+        text = str(raw.get("text") or _text_from_tokens(bangla_tokens, b_start, b_end)).strip()
+        if not text:
+            continue
 
-    return merged
+        normalized.append({
+            "text": text,
+            "bangla_start": b_start,
+            "bangla_end": b_end,
+            "arabic_start": a_start,
+            "arabic_end": a_end,
+        })
 
-
-def _join_text(left: str, right: str) -> str:
-    left = left.rstrip()
-    right = right.lstrip()
-    if not left:
-        return right
-    if not right:
-        return left
-    if right[0] in ",.;:!?)]}":
-        return left + right
-    return left + " " + right
+    return normalized
 
 
 def _fallback_phrase(text: str, words: list[dict], start_idx: int, end_idx: int) -> list[dict]:
     start, end = _timed_word_span(words, start_idx, end_idx)
+    tokens = _tokenize_translation(text)
     return [{
         "text": text.strip(),
+        "bangla_start": 0,
+        "bangla_end": max(0, len(tokens) - 1),
         "arabic_start": start_idx,
         "arabic_end": end_idx,
         "start": start,
@@ -110,7 +136,10 @@ def _fallback_segments(ayah: dict, source: str = "fallback") -> list[dict]:
     if not words:
         return [{
             **ayah,
+            "schema_version": _SCHEMA_VERSION,
             "source": source,
+            "bangla_tokens": _tokenize_translation(ayah.get("translation", "")),
+            "layout": {"preset": "bottom_center"},
             "translation_phrases": [],
         }]
 
@@ -118,9 +147,11 @@ def _fallback_segments(ayah: dict, source: str = "fallback") -> list[dict]:
     end_idx = len(words) - 1
     start, end = _timed_word_span(words, start_idx, end_idx)
     translation = str(ayah.get("translation", "")).strip()
+    bangla_tokens = _tokenize_translation(translation)
     return [{
         "surah": ayah.get("surah"),
         "ayah": ayah.get("ayah"),
+        "schema_version": _SCHEMA_VERSION,
         "arabic": ayah.get("arabic", ""),
         "translation": translation,
         "start": start,
@@ -128,6 +159,14 @@ def _fallback_segments(ayah: dict, source: str = "fallback") -> list[dict]:
         "words": words,
         "source": source,
         "parent_translation": ayah.get("translation", ""),
+        "display_arabic_start": start_idx,
+        "display_arabic_end": end_idx,
+        "arabic_start": start_idx,
+        "arabic_end": end_idx,
+        "display_bangla_start": 0,
+        "display_bangla_end": max(0, len(bangla_tokens) - 1),
+        "bangla_tokens": bangla_tokens,
+        "layout": {"preset": "bottom_center"},
         "translation_phrases": _fallback_phrase(translation, words, start_idx, end_idx),
     }]
 
@@ -136,11 +175,16 @@ def _build_prompt(ayah: dict, cfg: dict) -> str:
     max_chars = cfg.get("max_display_chars", 86)
     max_words = cfg.get("max_display_arabic_words", 12)
 
+    original_bangla_tokens = _tokenize_translation(ayah.get("translation", ""))
     payload = {
         "surah": ayah.get("surah"),
         "ayah": ayah.get("ayah"),
         "authoritative_arabic_ayah": ayah.get("arabic", ""),
         "original_bangla_translation": ayah.get("translation", ""),
+        "original_bangla_tokens": [
+            {"index": i, "token": token}
+            for i, token in enumerate(original_bangla_tokens)
+        ],
         "timed_arabic_words": [
             {
                 "index": i,
@@ -162,20 +206,20 @@ Goal:
    a full ayah. Prefer units under {max_chars} Bangla characters and about
    {max_words} Arabic timed words, but never split in a way that damages
    meaning or recitation/translation synchronization.
-2. For each display unit, split the ORIGINAL Bangla translation into smaller
-   contiguous Bangla phrases for karaoke highlighting. Keep the Bangla word
-   order exactly as the original translation presents it. Do not reorder Bangla
-   to match Arabic grammar.
+2. Each display unit must reference a contiguous range of
+   original_bangla_tokens using display_bangla_start/display_bangla_end. Keep
+   the Bangla word order exactly as the original translation presents it. Do not
+   reorder Bangla to match Arabic grammar.
 3. Map each Bangla phrase to one or more Arabic timed word indices. Some Bangla
    phrases may map to multiple Arabic words and some Arabic particles may be
    absorbed into a larger Bangla phrase.
-4. The phrase maps inside a display unit must be in Bangla display order and
-   their Arabic ranges should be non-decreasing. If fine-grained mapping would
-   require non-monotonic timing because Arabic and Bangla syntax differ, merge
-   adjacent Bangla phrases into a larger phrase.
+4. The phrase maps inside a display unit must use bangla_start/bangla_end as
+   LOCAL token indices inside that display unit's bangla_tokens. Arabic ranges
+   may move forward or backward relative to Bangla order when Arabic and Bangla
+   syntax differ. Do not force Bangla into Arabic order.
 
 Use timed_arabic_words indices for all arabic_start/arabic_end values.
-Both arabic_start and arabic_end are inclusive.
+All start/end indices are inclusive.
 
 Required JSON shape:
 {{
@@ -183,10 +227,14 @@ Required JSON shape:
     {{
       "arabic_start": 0,
       "arabic_end": 5,
+      "display_bangla_start": 0,
+      "display_bangla_end": 6,
       "bangla_text": "contiguous part of the original Bangla translation",
+      "bangla_tokens": ["token0", "token1", "token2"],
+      "layout": {{"preset": "bottom_center"}},
       "translation_phrases": [
-        {{"text": "Bangla phrase", "arabic_start": 0, "arabic_end": 1}},
-        {{"text": "next Bangla phrase", "arabic_start": 2, "arabic_end": 5}}
+        {{"bangla_start": 0, "bangla_end": 0, "text": "Bangla phrase", "arabic_start": 3, "arabic_end": 3}},
+        {{"bangla_start": 1, "bangla_end": 2, "text": "next Bangla phrase", "arabic_start": 0, "arabic_end": 2}}
       ]
     }}
   ]
@@ -251,6 +299,7 @@ def _normalize_response(ayah: dict, response: dict) -> list[dict]:
     if not words:
         return _fallback_segments(ayah, source="gemini_no_words")
 
+    parent_bangla_tokens = _tokenize_translation(ayah.get("translation", ""))
     units = response.get("display_units") or response.get("segments") or []
     if not isinstance(units, list) or not units:
         return _fallback_segments(ayah, source="gemini_empty")
@@ -278,14 +327,41 @@ def _normalize_response(ayah: dict, response: dict) -> list[dict]:
         bangla_text = str(
             unit.get("bangla_text") or unit.get("translation") or ""
         ).strip()
+        display_bangla_start = int(unit.get("display_bangla_start", unit.get("bangla_start", 0)))
+        display_bangla_end = int(unit.get("display_bangla_end", unit.get("bangla_end", display_bangla_start)))
+        if parent_bangla_tokens:
+            max_parent_bangla = len(parent_bangla_tokens) - 1
+            display_bangla_start = max(0, min(display_bangla_start, max_parent_bangla))
+            display_bangla_end = max(display_bangla_start, min(display_bangla_end, max_parent_bangla))
+
+        bangla_tokens = unit.get("bangla_tokens")
+        if not isinstance(bangla_tokens, list) or not bangla_tokens:
+            if parent_bangla_tokens:
+                bangla_tokens = parent_bangla_tokens[display_bangla_start:display_bangla_end + 1]
+            else:
+                bangla_tokens = _tokenize_translation(bangla_text)
+        bangla_tokens = [str(token).strip() for token in bangla_tokens if str(token).strip()]
+
         if not bangla_text:
+            bangla_text = " ".join(bangla_tokens)
+        if not bangla_text or not bangla_tokens:
             continue
 
         start, end = _timed_word_span(words, a_start, a_end)
         raw_phrases = unit.get("translation_phrases") or unit.get("phrases") or []
-        phrase_maps = _merge_phrase_maps(raw_phrases, {"arabic_start": a_start, "arabic_end": a_end})
+        phrase_maps = _normalize_phrase_maps(
+            raw_phrases,
+            {"arabic_start": a_start, "arabic_end": a_end},
+            bangla_tokens,
+        )
         if not phrase_maps:
-            phrase_maps = [{"text": bangla_text, "arabic_start": a_start, "arabic_end": a_end}]
+            phrase_maps = [{
+                "text": bangla_text,
+                "bangla_start": 0,
+                "bangla_end": len(bangla_tokens) - 1,
+                "arabic_start": a_start,
+                "arabic_end": a_end,
+            }]
 
         timed_phrases = []
         for phrase in phrase_maps:
@@ -296,6 +372,8 @@ def _normalize_response(ayah: dict, response: dict) -> list[dict]:
             )
             timed_phrases.append({
                 **phrase,
+                "global_bangla_start": display_bangla_start + int(phrase["bangla_start"]),
+                "global_bangla_end": display_bangla_start + int(phrase["bangla_end"]),
                 "start": phrase_start,
                 "end": phrase_end,
             })
@@ -303,6 +381,7 @@ def _normalize_response(ayah: dict, response: dict) -> list[dict]:
         display_segments.append({
             "surah": ayah.get("surah"),
             "ayah": ayah.get("ayah"),
+            "schema_version": _SCHEMA_VERSION,
             "arabic": ayah.get("arabic", ""),
             "translation": bangla_text,
             "start": start,
@@ -310,8 +389,14 @@ def _normalize_response(ayah: dict, response: dict) -> list[dict]:
             "words": words[a_start:a_end + 1],
             "source": "gemini",
             "parent_translation": ayah.get("translation", ""),
+            "display_arabic_start": a_start,
+            "display_arabic_end": a_end,
             "arabic_start": a_start,
             "arabic_end": a_end,
+            "display_bangla_start": display_bangla_start,
+            "display_bangla_end": display_bangla_end,
+            "bangla_tokens": bangla_tokens,
+            "layout": unit.get("layout") or {"preset": "bottom_center"},
             "translation_phrases": timed_phrases,
         })
         last_end = a_end
@@ -327,9 +412,12 @@ def segment_ayahs_with_gemini(
     """Return display-level subtitle segments with phrase timing maps."""
     output = Path(output_path) if output_path else None
     if output and cfg.get("cache_results", True) and output.exists():
-        logger.info("Using cached Gemini segmentation: %s", output)
         with open(output, "r", encoding="utf-8") as f:
-            return json.load(f)
+            cached = json.load(f)
+        if _is_current_schema(cached):
+            logger.info("Using cached Gemini segmentation: %s", output)
+            return cached
+        logger.info("Ignoring stale Gemini segmentation cache: %s", output)
 
     if not cfg.get("enabled", False):
         logger.info("Gemini segmentation disabled; using ayah-level subtitles")

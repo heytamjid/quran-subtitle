@@ -37,6 +37,7 @@ def _load_config(config_path: str) -> dict:
                           "chunk_length_s": 30, "stride_length_s": 5,
                           "language": "ar"},
         "matching": {"surah_hint": None},
+        "gemini": {"enabled": False, "location": "global"},
         "subtitle": {},
         "video": {},
         "paths": {"quran_csv": "data/ben_quran_with_tafsir.csv",
@@ -111,6 +112,18 @@ def cmd_match(args):
     print(f"Matched {len(segments)} segments -> {out}")
 
 
+def cmd_segment(args):
+    from src.match import load_segments
+    from src.gemini_segment import segment_ayahs_with_gemini
+
+    cfg = _load_config(args.config)
+    segments = load_segments(args.segments)
+
+    out = args.output or str(Path(args.segments).with_name("gemini_segments.json"))
+    enhanced = segment_ayahs_with_gemini(segments, cfg.get("gemini", {}), out)
+    print(f"Segmented {len(segments)} ayahs into {len(enhanced)} display units -> {out}")
+
+
 def cmd_subtitle(args):
     from src.match import load_segments
     from src.subtitle import generate_srt, generate_ass
@@ -183,6 +196,12 @@ def main():
     p.add_argument("--surah", type=int, default=None, help="Surah number hint")
     p.add_argument("-o", "--output", default=None, help="Output segments JSON path")
     p.set_defaults(func=cmd_match)
+
+    # -- segment --
+    p = sub.add_parser("segment", help="Use Gemini to split matched ayahs into display units")
+    p.add_argument("segments", help="Matched segments JSON file")
+    p.add_argument("-o", "--output", default=None, help="Output Gemini segments JSON path")
+    p.set_defaults(func=cmd_segment)
 
     # -- subtitle --
     p = sub.add_parser("subtitle", help="Generate SRT/ASS from matched segments")

@@ -151,6 +151,21 @@ def align_words_to_ayahs(
     cur_ci = None
     cur_start = None
     cur_end = None
+    cur_words = []
+
+    def _flush_segment():
+        if cur_ci is None:
+            return
+        ayah = candidates[cur_ci]
+        segments.append({
+            "surah": ayah["surah"],
+            "ayah": ayah["ayah"],
+            "arabic": ayah["text"],
+            "translation": ayah["translation"],
+            "start": cur_start,
+            "end": cur_end,
+            "words": cur_words.copy(),
+        })
 
     for ni, ci in enumerate(trans_ayah_map):
         if ci is None:
@@ -159,31 +174,23 @@ def align_words_to_ayahs(
 
         if ci != cur_ci:
             # Flush previous segment
-            if cur_ci is not None:
-                ayah = candidates[cur_ci]
-                segments.append({
-                    "surah": ayah["surah"],
-                    "ayah": ayah["ayah"],
-                    "translation": ayah["translation"],
-                    "start": cur_start,
-                    "end": cur_end,
-                })
+            _flush_segment()
             cur_ci = ci
             cur_start = orig["start"]
             cur_end = orig["end"]
+            cur_words = []
         else:
             cur_end = orig["end"]
 
-    # Flush last segment
-    if cur_ci is not None:
-        ayah = candidates[cur_ci]
-        segments.append({
-            "surah": ayah["surah"],
-            "ayah": ayah["ayah"],
-            "translation": ayah["translation"],
-            "start": cur_start,
-            "end": cur_end,
+        cur_words.append({
+            "index": len(cur_words),
+            "word": orig["word"],
+            "start": orig["start"],
+            "end": orig["end"],
         })
+
+    # Flush last segment
+    _flush_segment()
 
     logger.info("Produced %d ayah subtitle segments", len(segments))
     for seg in segments:

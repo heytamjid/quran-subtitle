@@ -7,6 +7,7 @@ from .audio import extract_audio
 from .transcribe import transcribe_audio, save_transcription
 from .quran_data import load_quran_data
 from .match import align_words_to_ayahs, save_segments
+from .gemini_segment import segment_ayahs_with_gemini
 from .subtitle import generate_srt, generate_ass
 from .render import render_video
 
@@ -66,6 +67,7 @@ def run_pipeline(video_path: str, config: dict) -> str:
     tc = config["transcription"]
     mc = config["matching"]
     sc = config["subtitle"]
+    gc = config.get("gemini", {})
     vc = config.get("video", {})
 
     # Resolve CSV path relative to project root (where config.yaml lives)
@@ -75,7 +77,7 @@ def run_pipeline(video_path: str, config: dict) -> str:
 
     # --- Step 1: Extract audio -----------------------------------------------
     logger.info("=" * 60)
-    logger.info("STEP 1 / 6  —  Extract audio")
+    logger.info("STEP 1 / 7  -  Extract audio")
     audio_path = extract_audio(
         str(video_path),
         str(output_dir / "audio.mp3"),
@@ -83,7 +85,7 @@ def run_pipeline(video_path: str, config: dict) -> str:
 
     # --- Step 2: Transcribe --------------------------------------------------
     logger.info("=" * 60)
-    logger.info("STEP 2 / 6  —  Transcribe audio")
+    logger.info("STEP 2 / 7  -  Transcribe audio")
     transcription = transcribe_audio(
         audio_path,
         model_id=tc.get("model_id", "tarteel-ai/whisper-base-ar-quran"),
@@ -96,12 +98,12 @@ def run_pipeline(video_path: str, config: dict) -> str:
 
     # --- Step 3: Load Quran data ---------------------------------------------
     logger.info("=" * 60)
-    logger.info("STEP 3 / 6  —  Load Quran data")
+    logger.info("STEP 3 / 7  -  Load Quran data")
     quran_ayahs = load_quran_data(str(csv_path))
 
     # --- Step 4: Match transcription to ayahs --------------------------------
     logger.info("=" * 60)
-    logger.info("STEP 4 / 6  —  Match transcription to Quran")
+    logger.info("STEP 4 / 7  -  Match transcription to Quran")
     segments = align_words_to_ayahs(
         transcription["words"],
         quran_ayahs,
@@ -112,15 +114,24 @@ def run_pipeline(video_path: str, config: dict) -> str:
     if not segments:
         raise RuntimeError("No matching ayahs found. Check the audio or try a surah hint.")
 
-    # --- Step 5: Generate subtitles ------------------------------------------
+    # --- Step 5: Segment ayahs for display/highlighting ----------------------
     logger.info("=" * 60)
-    logger.info("STEP 5 / 6  —  Generate subtitles")
-    generate_srt(segments, str(output_dir / "subtitles.srt"))
-    ass_path = generate_ass(segments, sc, str(output_dir / "subtitles.ass"))
+    logger.info("STEP 5 / 7  -  Segment ayahs for display")
+    display_segments = segment_ayahs_with_gemini(
+        segments,
+        gc,
+        str(output_dir / "gemini_segments.json"),
+    )
 
-    # --- Step 6: Render final video ------------------------------------------
+    # --- Step 6: Generate subtitles ------------------------------------------
     logger.info("=" * 60)
-    logger.info("STEP 6 / 6  —  Render video with subtitles")
+    logger.info("STEP 6 / 7  -  Generate subtitles")
+    generate_srt(display_segments, str(output_dir / "subtitles.srt"))
+    ass_path = generate_ass(display_segments, sc, str(output_dir / "subtitles.ass"))
+
+    # --- Step 7: Render final video ------------------------------------------
+    logger.info("=" * 60)
+    logger.info("STEP 7 / 7  -  Render video with subtitles")
     final_path = render_video(
         str(video_path),
         ass_path,

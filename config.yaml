@@ -10,6 +10,7 @@ subtitle:
 
   # ASS colors in &HAABBGGRR format
   primary_color: "&H00FFFFFF"      # White text
+  karaoke_color: "&H0000FFFF"      # Yellow karaoke highlight
   outline_color: "&H00000000"      # Black outline
   back_color: "&H80000000"         # Semi-transparent black background
 
@@ -37,6 +38,18 @@ matching:
   # Optional: set to a surah number (e.g. 6) to narrow the search space.
   # Leave as null to search the entire Quran automatically.
   surah_hint: null
+
+gemini:
+  enabled: true
+  credentials_path: "C:/Users/USER/Desktop/DONTTOUCH/project-ade5f3ce-e086-4d4c-91c-1e8d1c34cf7e.json"
+  project_id: null                 # Read from the service account JSON when null
+  location: "global"
+  model: "gemini-2.5-flash"
+  temperature: 0.15
+  cache_results: true
+  fallback_on_error: true
+  max_display_chars: 86
+  max_display_arabic_words: 12
 
 video:
   codec: "libx264"

@@ -8,5 +8,6 @@ __pycache__/
 output/
 input/
 logs/
+.venvLinux/
 
 

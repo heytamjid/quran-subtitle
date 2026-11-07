@@ -1,6 +1,11 @@
-# QuranSub Pipeline
+# Legacy ayah subtitle pipeline
 
-This document describes the pipeline as it is currently implemented. QuranSub takes a Quran-recitation video, transcribes the Arabic audio with word timestamps, aligns the transcription to Quran ayahs, uses the corresponding Bangla translations as subtitles, and burns those subtitles into a new video.
+> The default `full` pipeline now renders an Arabic/Bangla word carousel.
+> See [word-by-word.md](word-by-word.md) for its data, timing, design controls,
+> commands and validation. The pipeline described below is the retained
+> ayah-level mode, selected with `--mode ayah` or `word_by_word.enabled: false`.
+
+In legacy mode, QuranSub takes a Quran-recitation video, transcribes the Arabic audio with word timestamps, aligns the transcription to Quran ayahs, uses the corresponding Bangla translations as subtitles, and burns those subtitles into a new video.
 
 ## End-to-end data flow
 
@@ -40,19 +45,19 @@ The full pipeline is orchestrated by `src/pipeline.py` and exposed through `run.
 Install the Python packages from `requirements.txt` and ensure `ffmpeg` is available on `PATH`. A CUDA-capable PyTorch installation is optional; without CUDA, transcription runs on the CPU.
 
 ```bash
-python run.py full recitation.mp4
+python run.py full recitation.mp4 --mode ayah
 ```
 
 For a known surah, provide its number to avoid automatic surah detection:
 
 ```bash
-python run.py full recitation.mp4 --surah 20
+python run.py full recitation.mp4 --surah 20 --mode ayah
 ```
 
 The global configuration option must appear before the subcommand:
 
 ```bash
-python run.py --config /path/to/config.yaml full recitation.mp4
+python run.py --config /path/to/config.yaml full recitation.mp4 --mode ayah
 ```
 
 ### Input path resolution

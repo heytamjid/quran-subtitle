@@ -10,3 +10,4 @@ input/
 logs/
 .venvLinux/
 key.txt
+data/word_cache/

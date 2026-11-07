@@ -1,11 +1,32 @@
 """Burn subtitles into a video using ffmpeg."""
 
 import logging
-import os
+import json
 import subprocess
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
+
+
+def probe_video_size(video_path: str) -> tuple[int, int]:
+    """Return display dimensions, accounting for ffmpeg's automatic rotation."""
+    result = subprocess.run([
+        "ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
+        "stream=width,height:stream_tags=rotate:stream_side_data=rotation", "-of", "json", str(video_path),
+    ], capture_output=True, text=True, check=True)
+    streams = json.loads(result.stdout)["streams"]
+    if not streams:
+        raise ValueError(f"No video stream in {video_path}")
+    stream = streams[0]
+    width, height = stream["width"], stream["height"]
+    rotation = float(stream.get("tags", {}).get("rotate", 0))
+    for side in stream.get("side_data_list", []):
+        rotation = float(side.get("rotation", rotation))
+    return (height, width) if abs(rotation) % 180 == 90 else (width, height)
+
+
+def _filter_path(path: str) -> str:
+    return str(path).replace("\\", "/").replace(":", "\\:").replace("'", "'\\''")
 
 
 def render_video(
@@ -15,6 +36,7 @@ def render_video(
     codec: str = "libx264",
     crf: int = 18,
     preset: str = "medium",
+    fonts_dir: str | None = None,
 ) -> str:
     """Burn ASS subtitles into a video.
 
@@ -44,11 +66,14 @@ def render_video(
     # ffmpeg filter option parser.
     work_dir = str(ass_path.parent)
     ass_filename = ass_path.name
+    subtitle_filter = f"ass=filename='{_filter_path(ass_filename)}':shaping=complex"
+    if fonts_dir:
+        subtitle_filter += f":fontsdir='{_filter_path(str(Path(fonts_dir).resolve()))}'"
 
     cmd = [
         "ffmpeg",
         "-i", str(video_path),
-        "-vf", f"ass={ass_filename}",
+        "-vf", subtitle_filter,
         "-c:v", codec,
         "-crf", str(crf),
         "-preset", preset,

@@ -39,6 +39,7 @@ def _load_config(config_path: str) -> dict:
         "matching": {"surah_hint": None},
         "subtitle": {},
         "video": {},
+        "word_by_word": {"enabled": True},
         "paths": {"quran_csv": "data/ben_quran_with_tafsir.csv",
                   "output_dir": "output"},
     }
@@ -59,6 +60,8 @@ def _setup_logging():
 def cmd_full(args):
     from src.pipeline import run_pipeline
     cfg = _load_config(args.config)
+    if args.mode:
+        cfg.setdefault("word_by_word", {})["enabled"] = args.mode == "words"
     if args.surah is not None:
         cfg["matching"]["surah_hint"] = args.surah
     if args.output_dir:
@@ -137,8 +140,32 @@ def cmd_render(args):
         codec=vc.get("codec", "libx264"),
         crf=vc.get("crf", 18),
         preset=vc.get("preset", "medium"),
+        fonts_dir=vc.get("fonts_dir"),
     )
     print(f"Rendered: {out}")
+
+
+def cmd_word_match(args):
+    from src.word_pipeline import match_words
+    cfg = _load_config(args.config)
+    if args.surah is not None:
+        cfg["matching"]["surah_hint"] = args.surah
+    transcription = json.loads(Path(args.transcription).read_text(encoding="utf-8"))
+    cues = match_words(transcription, cfg, args.output_dir)
+    print(f"Matched {len(cues)} words -> {args.output_dir}/word_cues.json")
+
+
+def cmd_word_subtitle(args):
+    from src.word_pipeline import word_subtitles
+    cfg = _load_config(args.config)
+    cues = json.loads(Path(args.cues).read_text(encoding="utf-8"))
+    if args.size:
+        width, height = args.size.lower().split("x")
+        size = (int(width), int(height))
+    else:
+        size = None
+    result = word_subtitles(cues, cfg, args.output_dir, args.video, size)
+    print(f"Word overlay saved: {result}")
 
 
 # ---------------------------------------------------------------------------
@@ -163,6 +190,7 @@ def main():
     p.add_argument("video", help="Video filename (looked up in input/ directory)")
     p.add_argument("--surah", type=int, default=None, help="Surah number hint")
     p.add_argument("--output-dir", default=None, help="Output directory")
+    p.add_argument("--mode", choices=("words", "ayah"), help="Override word carousel / legacy ayah subtitles")
     p.set_defaults(func=cmd_full)
 
     # -- extract-audio --
@@ -196,6 +224,20 @@ def main():
     p.add_argument("--subtitle", required=True, help="ASS subtitle file")
     p.add_argument("-o", "--output", default=None, help="Output video path")
     p.set_defaults(func=cmd_render)
+
+    p = sub.add_parser("word-match", help="Match saved ASR word timestamps to Arabic/Bangla pairs")
+    p.add_argument("transcription", help="Transcription JSON with recording-relative word timestamps")
+    p.add_argument("--surah", type=int, help="Surah number hint")
+    p.add_argument("-o", "--output-dir", default="output")
+    p.set_defaults(func=cmd_word_match)
+
+    p = sub.add_parser("word-subtitle", help="Design the word carousel from saved cues, without transcribing again")
+    p.add_argument("cues", help="word_cues.json; Arabic, Bangla, start, end per word")
+    dimensions = p.add_mutually_exclusive_group(required=True)
+    dimensions.add_argument("--video", help="Read dimensions from source video")
+    dimensions.add_argument("--size", help="Explicit frame dimensions, e.g. 720x1280")
+    p.add_argument("-o", "--output-dir", default="output")
+    p.set_defaults(func=cmd_word_subtitle)
 
     args = parser.parse_args()
     args.func(args)

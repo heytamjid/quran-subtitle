@@ -42,6 +42,53 @@ video:
   codec: "libx264"
   crf: 18
   preset: "medium"
+  # Optional directory of additional .ttf/.otf fonts for libass.
+  fonts_dir: null
+
+# Independent data, layout, typography, palette and animation controls.
+# Coordinates/sizes scale from the shorter video dimension / reference_size.
+word_by_word:
+  enabled: true                 # false restores the old ayah subtitle pipeline
+  data:
+    cache_dir: "data/word_cache" # pinned Quran WBW download; reusable offline
+    file: null                  # optional normalized Arabic/Bangla JSON override
+  layout:
+    reference_size: 720
+    height: 202
+    margin_x: 22
+    margin_bottom: 24
+    radius: 24
+    padding: 16
+    min_card_width: 180
+    max_card_width: 300
+    card_gap: 18
+    center_x: 0.5               # fraction of frame width
+    arabic_top: 14
+    bangla_top: 102
+  typography:
+    arabic:
+      font: "Noto Naskh Arabic"
+      size: 48
+    bangla:
+      font: "Noto Sans Bengali"
+      size: 24
+      max_lines: 2
+  palette:                      # regular #RRGGBB colors
+    background: "#F4ECE7"
+    decoration: "#DEDCEC"
+    decoration_alt: "#D9E8DE"
+    focus: "#FFF9F3"
+    arabic: "#263D35"
+    bangla: "#344A42"
+    muted: "#8A918A"
+    accent: "#719B89"
+    opacity: 0.95
+  motion:
+    duration_ms: 180
+    easing: "smoothstep"        # or linear
+    fps: 30                     # animation subdivisions, not output frame rate
+    pause_threshold: 1.2        # hide during longer silences
+    hold_after_word: 0.35
 
 paths:
   quran_csv: "data/ben_quran_with_tafsir.csv"

@@ -4,9 +4,6 @@ import logging
 from pathlib import Path
 
 from .audio import extract_audio
-from .transcribe import transcribe_audio, save_transcription
-from .quran_data import load_quran_data
-from .match import align_words_to_ayahs, save_segments
 from .subtitle import generate_srt, generate_ass
 from .render import render_video
 
@@ -42,6 +39,8 @@ def run_pipeline(video_path: str, config: dict) -> str:
     Returns:
         Path to the final subtitled video.
     """
+    from .transcribe import transcribe_audio, save_transcription
+
     project_root = Path(config.get("_project_root", ".")).resolve()
 
     # Resolve video: look in input/ directory first, then as-is
@@ -68,11 +67,6 @@ def run_pipeline(video_path: str, config: dict) -> str:
     sc = config["subtitle"]
     vc = config.get("video", {})
 
-    # Resolve CSV path relative to project root (where config.yaml lives)
-    csv_path = Path(config["paths"]["quran_csv"])
-    if not csv_path.is_absolute():
-        csv_path = Path(config.get("_project_root", ".")) / csv_path
-
     # --- Step 1: Extract audio -----------------------------------------------
     logger.info("=" * 60)
     logger.info("STEP 1 / 6  —  Extract audio")
@@ -94,29 +88,26 @@ def run_pipeline(video_path: str, config: dict) -> str:
     )
     save_transcription(transcription, str(output_dir / "transcription.json"))
 
-    # --- Step 3: Load Quran data ---------------------------------------------
-    logger.info("=" * 60)
-    logger.info("STEP 3 / 6  —  Load Quran data")
-    quran_ayahs = load_quran_data(str(csv_path))
-
-    # --- Step 4: Match transcription to ayahs --------------------------------
-    logger.info("=" * 60)
-    logger.info("STEP 4 / 6  —  Match transcription to Quran")
-    segments = align_words_to_ayahs(
-        transcription["words"],
-        quran_ayahs,
-        surah_hint=mc.get("surah_hint"),
-    )
-    save_segments(segments, str(output_dir / "matched_segments.json"))
-
-    if not segments:
-        raise RuntimeError("No matching ayahs found. Check the audio or try a surah hint.")
-
-    # --- Step 5: Generate subtitles ------------------------------------------
-    logger.info("=" * 60)
-    logger.info("STEP 5 / 6  —  Generate subtitles")
-    generate_srt(segments, str(output_dir / "subtitles.srt"))
-    ass_path = generate_ass(segments, sc, str(output_dir / "subtitles.ass"))
+    if config.get("word_by_word", {}).get("enabled", True):
+        from .word_pipeline import match_words, word_subtitles
+        logger.info("STEPS 3–4 / 6 — Load Arabic/Bangla word data and align recording timestamps")
+        cues = match_words(transcription, config, output_dir)
+        logger.info("STEP 5 / 6 — Generate word carousel")
+        ass_path = word_subtitles(cues, config, output_dir, str(video_path))
+    else:
+        from .quran_data import load_quran_data
+        from .match import align_words_to_ayahs, save_segments
+        csv_path = Path(config["paths"]["quran_csv"])
+        if not csv_path.is_absolute():
+            csv_path = project_root / csv_path
+        logger.info("STEPS 3–4 / 6 — Load and match ayah translations")
+        segments = align_words_to_ayahs(transcription["words"], load_quran_data(str(csv_path)),
+                                        surah_hint=mc.get("surah_hint"))
+        save_segments(segments, str(output_dir / "matched_segments.json"))
+        if not segments:
+            raise RuntimeError("No matching ayahs found. Check the audio or try a surah hint.")
+        generate_srt(segments, str(output_dir / "subtitles.srt"))
+        ass_path = generate_ass(segments, sc, str(output_dir / "subtitles.ass"))
 
     # --- Step 6: Render final video ------------------------------------------
     logger.info("=" * 60)
@@ -128,6 +119,7 @@ def run_pipeline(video_path: str, config: dict) -> str:
         codec=vc.get("codec", "libx264"),
         crf=vc.get("crf", 18),
         preset=vc.get("preset", "medium"),
+        fonts_dir=vc.get("fonts_dir"),
     )
 
     logger.info("=" * 60)

@@ -9,5 +9,4 @@ output/
 input/
 logs/
 .venvLinux/
-
-
+key.txt

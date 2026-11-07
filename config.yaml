@@ -52,6 +52,23 @@ word_by_word:
   data:
     cache_dir: "data/word_cache" # pinned Quran WBW download; reusable offline
     file: null                  # optional normalized Arabic/Bangla JSON override
+  alignment:
+    context_corrections: true   # repair small ASR errors between exact anchors
+    max_edit_distance: 1        # maximum letter edits for a contextual correction
+    min_similarity: 0.6
+    beam_width: 32
+    max_timestamp_overlap_s: 0.08  # reconcile tiny ASR overlaps; 0 disables repair
+  recovery:
+    enabled: true              # disable per run with --no-recovery
+    min_word_duration_s: 5.0    # lower = retry more spans; higher = fewer retries
+    context_s: 0.4             # audio padding around the suspicious word
+    retry_context_s: 1.0       # padding for the second attempt
+    max_window_s: 12.0         # hard cap on each audio retry
+    max_regions: 6             # maximum suspicious regions retried per run
+    max_attempts: 2             # 1 or 2
+    min_exact_words: 3         # require this many exact matches before accepting
+    min_coverage: 0.7          # fraction of original span covered by retry cues
+    max_lookback_words: 16     # canonical context for finding a repeated phrase
   layout:
     reference_size: 720
     height: 202

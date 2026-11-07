@@ -62,6 +62,8 @@ def cmd_full(args):
     cfg = _load_config(args.config)
     if args.mode:
         cfg.setdefault("word_by_word", {})["enabled"] = args.mode == "words"
+    if args.recovery is not None:
+        cfg.setdefault("word_by_word", {}).setdefault("recovery", {})["enabled"] = args.recovery
     if args.surah is not None:
         cfg["matching"]["surah_hint"] = args.surah
     if args.output_dir:
@@ -148,10 +150,12 @@ def cmd_render(args):
 def cmd_word_match(args):
     from src.word_pipeline import match_words
     cfg = _load_config(args.config)
+    if args.recovery is not None:
+        cfg.setdefault("word_by_word", {}).setdefault("recovery", {})["enabled"] = args.recovery
     if args.surah is not None:
         cfg["matching"]["surah_hint"] = args.surah
     transcription = json.loads(Path(args.transcription).read_text(encoding="utf-8"))
-    cues = match_words(transcription, cfg, args.output_dir)
+    cues = match_words(transcription, cfg, args.output_dir, args.audio)
     print(f"Matched {len(cues)} words -> {args.output_dir}/word_cues.json")
 
 
@@ -191,6 +195,8 @@ def main():
     p.add_argument("--surah", type=int, default=None, help="Surah number hint")
     p.add_argument("--output-dir", default=None, help="Output directory")
     p.add_argument("--mode", choices=("words", "ayah"), help="Override word carousel / legacy ayah subtitles")
+    p.add_argument("--recovery", action=argparse.BooleanOptionalAction, default=None,
+                   help="Enable/disable bounded audio retries for suspicious word spans (default: config)")
     p.set_defaults(func=cmd_full)
 
     # -- extract-audio --
@@ -227,6 +233,9 @@ def main():
 
     p = sub.add_parser("word-match", help="Match saved ASR word timestamps to Arabic/Bangla pairs")
     p.add_argument("transcription", help="Transcription JSON with recording-relative word timestamps")
+    p.add_argument("--audio", help="Source audio/video, required when audio recovery is enabled")
+    p.add_argument("--recovery", action=argparse.BooleanOptionalAction, default=None,
+                   help="Enable/disable audio recovery for this run")
     p.add_argument("--surah", type=int, help="Surah number hint")
     p.add_argument("-o", "--output-dir", default="output")
     p.set_defaults(func=cmd_word_match)

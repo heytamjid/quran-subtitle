@@ -27,29 +27,11 @@ from transformers import (
 logger = logging.getLogger(__name__)
 
 
-def transcribe_audio(
-    audio_path: str,
+def create_asr_pipeline(
     model_id: str = "tarteel-ai/whisper-base-ar-quran",
     base_model_id: str = "openai/whisper-base",
-    chunk_length_s: int = 30,
-    stride_length_s: int = 5,
-    language: str = "ar",
-) -> dict:
-    """Run Whisper-based ASR and return word-level timestamps.
-
-    Args:
-        audio_path: Path to the audio file (mp3/wav).
-        model_id: HuggingFace model ID for the fine-tuned Quran Whisper model.
-        base_model_id: Base Whisper model (used for generation config).
-        chunk_length_s: Audio chunk length for long-form transcription.
-        stride_length_s: Overlap between chunks.
-        language: Language code for transcription.
-
-    Returns:
-        dict with keys:
-            "text": full transcription string
-            "words": list of {"word": str, "start": float, "end": float}
-    """
+):
+    """Load one reusable engine for full transcription or bounded retries."""
     device = "cuda" if torch.cuda.is_available() else "cpu"
     dtype = torch.float16 if device == "cuda" else torch.float32
 
@@ -79,7 +61,7 @@ def transcribe_audio(
     gen_cfg.begin_suppress_tokens = [no_ts_id]
     model.generation_config = gen_cfg
 
-    asr_pipe = pipeline(
+    return pipeline(
         "automatic-speech-recognition",
         model=model,
         tokenizer=processor.tokenizer,
@@ -88,6 +70,19 @@ def transcribe_audio(
         device=device,
     )
 
+
+def transcribe_audio(
+    audio_path: str,
+    model_id: str = "tarteel-ai/whisper-base-ar-quran",
+    base_model_id: str = "openai/whisper-base",
+    chunk_length_s: int = 30,
+    stride_length_s: int = 5,
+    language: str = "ar",
+    asr_pipe=None,
+) -> dict:
+    """Transcribe recording-relative word timestamps, optionally reusing an engine."""
+    if asr_pipe is None:
+        asr_pipe = create_asr_pipeline(model_id, base_model_id)
     logger.info("Transcribing: %s", audio_path)
 
     result = asr_pipe(

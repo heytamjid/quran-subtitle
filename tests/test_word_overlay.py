@@ -35,6 +35,13 @@ class AlignmentTests(unittest.TestCase):
         cues, _ = align_word_cues(transcript("الرحمن الرحيم"), self.words, 1)
         self.assertEqual([w["position"] for w in cues], [3, 4])
 
+    def test_noisy_first_word_of_a_repeat_uses_following_exact_anchors(self):
+        raw = transcript("بسم الله الرحمن الرحيم بسن الله الرحمن الرحيم")
+        cues, report = align_word_cues(raw, self.words, 1)
+        self.assertEqual([w["position"] for w in cues], [1, 2, 3, 4, 1, 2, 3, 4])
+        self.assertEqual(cues[4]["match"], "repeat_context_corrected")
+        self.assertEqual(report["unmatched"], [])
+
     def test_dagger_alif_and_automatic_surah(self):
         words = self.words + [word(1, "وَسَلَٰمٌ", surah=27), word(2, "عَلَىٰ", surah=27),
                               word(3, "عِبَادِهِ", surah=27)]
@@ -47,6 +54,40 @@ class AlignmentTests(unittest.TestCase):
             align_word_cues([{"word": "الله", "start": 2, "end": 1}], self.words, 1)
         with self.assertRaises(ValueError):
             align_word_cues(transcript("الله"), self.words, 115)
+
+    def test_uthmani_hamza_maqsura_and_layl_equivalences(self):
+        words = [word(1, "ءَاخِذِينَ"), word(2, "ءَاتَىٰهُمۡ"), word(3, "ٱلَّيۡلِ"), word(4, "ءَايَٰتٞ")]
+        cues, report = align_word_cues(transcript("آخذين آتاهم الليل آيات"), words, 1)
+        self.assertEqual(report["matched"], 4)
+        self.assertEqual([w["position"] for w in cues], [1, 2, 3, 4])
+        # Removing every hamza would incorrectly match water to 'what'.
+        cues, _ = align_word_cues(transcript("ما"), [word(1, "مَاءٌ")], 1)
+        self.assertEqual(cues, [])
+
+    def test_split_asr_word_keeps_combined_span_and_position(self):
+        words = [word(1, "يُشْرِكُونَ", ayah=1), word(1, "أَمَّنۡ", ayah=2),
+                 word(2, "خَلَقَ", ayah=2), word(3, "السَّمَاوَاتِ", ayah=2), word(4, "مِنَ", ayah=2)]
+        raw = transcript("يشركون أم من خلق السماوات")
+        cues, report = align_word_cues(raw, words, 1)
+        self.assertEqual([(w["ayah"], w["position"]) for w in cues], [(1, 1), (2, 1), (2, 2), (2, 3)])
+        self.assertEqual(cues[1]["match"], "split_token")
+        self.assertEqual(cues[1]["start"], raw[1]["start"])
+        self.assertEqual(cues[1]["end"], raw[2]["end"])
+        self.assertEqual(report["matched"], 5)
+
+    def test_context_corrections_can_be_disabled_and_do_not_fill_absent_tokens(self):
+        words = [word(1, "لِلَّهِ"), word(2, "وَسَلَٰمٌ"), word(3, "عَلَىٰ")]
+        raw = transcript("لله وزلام على")
+        cues, _ = align_word_cues(raw, words, 1)
+        self.assertEqual(cues[1]["arabic"], "وَسَلَٰمٌ")
+        self.assertEqual(cues[1]["match"], "context_corrected")
+        self.assertEqual(cues[1]["timing_source"], "asr")
+        cues, report = align_word_cues(raw, words, 1, {"context_corrections": False})
+        self.assertEqual(len(cues), 2)
+        self.assertEqual(len(report["unmatched"]), 1)
+        cues, report = align_word_cues(transcript("لله على"), words, 1)
+        self.assertEqual(len(cues), 2)
+        self.assertEqual(report["canonical_gaps"][0]["words"][0]["position"], 2)
 
 
 class PresentationTests(unittest.TestCase):

@@ -91,7 +91,7 @@ def run_pipeline(video_path: str, config: dict) -> str:
     if config.get("word_by_word", {}).get("enabled", True):
         from .word_pipeline import match_words, word_subtitles
         logger.info("STEPS 3–4 / 6 — Load Arabic/Bangla word data and align recording timestamps")
-        cues = match_words(transcription, config, output_dir)
+        cues = match_words(transcription, config, output_dir, audio_path)
         logger.info("STEP 5 / 6 — Generate word carousel")
         ass_path = word_subtitles(cues, config, output_dir, str(video_path))
     else:

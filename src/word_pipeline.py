@@ -9,13 +9,20 @@ from .render import probe_video_size
 from .subtitle import generate_srt
 
 
-def match_words(transcription: dict, config: dict, output_dir: str | Path) -> list[dict]:
+def match_words(transcription: dict, config: dict, output_dir: str | Path,
+                audio_path: str | None = None) -> list[dict]:
     output = Path(output_dir)
     output.mkdir(parents=True, exist_ok=True)
     settings = config.get("word_by_word", {})
     words = load_word_data(settings.get("data", {}), config.get("_project_root", "."))
-    cues, report = align_word_cues(transcription["words"], words, config.get("matching", {}).get("surah_hint"))
-    for filename, data in (("word_cues.json", cues), ("alignment_report.json", report)):
+    alignment_config = settings.get("alignment", {})
+    cues, report = align_word_cues(transcription["words"], words, config.get("matching", {}).get("surah_hint"), alignment_config)
+    from .word_recovery import recover_word_cues
+    cues, recovery = recover_word_cues(cues, words, audio_path, settings.get("recovery", {}),
+                                       config.get("transcription", {}), alignment_config, output)
+    report["cue_count"] = len(cues)
+    report["recovery"] = {key: recovery[key] for key in ("enabled", "accepted_regions", "added_cues", "suspicious_spans")}
+    for filename, data in (("word_cues.json", cues), ("alignment_report.json", report), ("recovery_report.json", recovery)):
         (output / filename).write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
     if not cues:
         raise RuntimeError("No Quran words matched. Check the transcription and surah hint; see alignment_report.json.")
